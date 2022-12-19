@@ -1,0 +1,797 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    css: "https://thebudgetactuary.github.io/Exam_SRM/style.css"
+    number_sections: true
+    toc: true
+    toc_depth: 3
+---
+
+# Introduction
+
+__Kaggle Introduction:__
+
+The sinking of the Titanic is one of the most infamous shipwrecks in history.
+
+On April 15, 1912, during her maiden voyage, the widely considered “unsinkable” RMS Titanic sank after colliding with an iceberg. Unfortunately, there weren’t enough lifeboats for everyone onboard, resulting in the death of 1502 out of 2224 passengers and crew.
+
+While there was some element of luck involved in surviving, it seems some groups of people were more likely to survive than others.
+
+__Goal:__
+
+The goal of this study is to build a predictive model to accurately predict whether or not a person on the titanic will survive based on a given set of features. Throughout this study we will be using feature engineering techniques and an ensemble method to try to achieve the highest accuracy possible.
+
+# Libraries
+```{r libraries,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(gridExtra)
+library(corrplot)
+library(stringr)
+library(knitr)
+options(scipen=999)
+```
+
+# Loading Datasets
+```{r loading datasets}
+train <- read.csv("train.csv",stringsAsFactors = FALSE)
+
+test <- read.csv("test.csv",stringsAsFactors = FALSE)
+head(train)
+table(train$Parch,exclude=FALSE)
+table(train$Embarked,exclude=FALSE)
+
+```
+
+Passenger ID and ticket number will not be used in this study so will be dropped. After dropping these two variables, the test set consists of 9 predictors and 418 observations, while the train set consists of 9 predictors and 891 observations. The train set also contains the dependent variable 'Survived'.
+```{r removing unneeded labels}
+train <- train %>% select(-PassengerId,-Ticket)
+
+PassengerId <- test$PassengerId
+
+test <- test %>% select(-PassengerId,-Ticket)
+
+```
+
+
+Combining the data sets for easy analysis.
+```{r combining datasets}
+#adding survived variable for test with all NA values
+test$Survived <- NA
+combined <- rbind(train,test)
+
+```
+
+# NA Values
+
+Of the 9 predictors, the age variable contains 263 NA values and fare paid contains 1 NA value. The other 7 predictors have no NA values. 
+
+```{r NA plot}
+naCounts <- as.data.frame(sapply(combined, function(x) sum(is.na(x))))
+
+naCounts$variable <- row.names(naCounts)
+names(naCounts) <- c("naCount","variable")
+
+naCounts <- naCounts %>% 
+  filter(variable!="Survived")
+
+ggplot(naCounts,aes(x=reorder(variable,desc(naCount)),y=naCount))+
+  geom_bar(stat="identity",aes(fill=variable))+
+  geom_text(aes(label = naCount), vjust = 0)+
+  xlab("variable")+ylab("NA Count")+
+  labs(title="NA Counts")
+```
+
+# Variable Analysis
+
+## Dependent Variable
+
+__Survived:__ The dependent variable is whether or not a person survived the sinking of the Titanic. Exists in the train set but not in the test set. Most of the people from the train set died.
+
+* 1 - Survived
+* 0 - Died
+
+```{r survived}
+#percentage died in train set
+survivedPercent <- round(sum(combined$Survived==1,na.rm=TRUE)/nrow(train),2)*100
+#percentage survived in train set
+diedPercent <- round(sum(combined$Survived==0,na.rm=TRUE)/nrow(train),2)*100
+
+print(paste("In the train set",diedPercent,"% died while",survivedPercent,"% survived."))
+
+ggplot(combined[!is.na(combined$Survived),],aes(x=as.factor(Survived)))+
+  geom_bar()+
+  geom_text(stat='count', aes(label=..count..), vjust=0)+
+  xlab("Survived or Died")+
+  scale_x_discrete(labels = c('Died','Survived'))
+```
+
+## Independent Variables
+
+__Pclass:__ Represents a proxy for socio-economic status. Most people were lower class. Upper class appears to have the highest percent chance to survive, while lower class has the lowest chance to survive.
+
+* 1 = Upper
+* 2 = Middle
+* 3 = Lower
+
+```{r Pclass}
+ggplot(train,aes(x=as.factor(Pclass),fill=as.character(Survived)))+
+  geom_bar(position="dodge")+
+  scale_fill_discrete(labels=c("Died","Survived"),name = "")+
+  xlab("Pclass")
+```
+
+__Sex:__ Represents whether a person is a male or female. In the train and test set there are mainly males. Females had a much higher chance to survive than males. This makes sense as it is common in life and death situations for women and children to have priority. 
+
+```{r Sex}
+sexPlot <- ggplot(combined,aes(x=Sex,fill=Sex))+
+  geom_bar()+
+  geom_text(stat='count', aes(label=..count..), vjust=0)
+
+survivedBySex <- ggplot(train,aes(x=Sex,group=as.factor(Survived),fill=as.factor(Survived)))+
+  geom_bar(position="dodge")+
+  scale_fill_discrete(labels=c("Died","Survived"),name = "")+
+  xlab("Sex")
+
+grid.arrange(sexPlot,survivedBySex,ncol=2)
+```
+
+__Age:__ Most people are in the 20-40 age range. 3.8% of the people are 4 years old or younger. The mean age of those that survived is slightly less than the average of those that died.
+
+```{r age}
+ageDist <- ggplot(combined[!is.na(combined$Age),],aes(x=Age))+
+  geom_histogram()
+
+survivedByAge <- train %>% group_by(Survived) %>% 
+  summarize(meanAge=mean(Age,na.rm=TRUE)) %>% 
+ggplot(.,aes(x=as.factor(Survived),y=meanAge))+
+  geom_col()+
+  xlab("Survived")+
+  ylab("Average Age")
+
+grid.arrange(ageDist,survivedByAge,ncol=2)
+```
+
+__SibSp:__ The sum of the number of siblings plus the number of spouses on the Titanic ship. Most have 0 meaning they had no sibling or spouses. People with 1 or 2 siblings on board had the highest percent chance to survive.
+```{r sibsp}
+sibspHist <- ggplot(combined,aes(x=factor(SibSp)))+
+  geom_bar()+
+  geom_text(stat='count', aes(label=..count..), vjust=0)+
+  xlab("Sibling Spouses Count")
+
+
+sibspSurvive <- combined %>% group_by(SibSp) %>% 
+  summarize(survived=mean(Survived,na.rm=TRUE)) %>% 
+ggplot(.,aes(x=factor(SibSp),y=survived))+
+  geom_col()+
+  xlab("Sibling Spouses Count")+
+  ylab("Percentage Chance to Survive")
+  
+grid.arrange(sibspHist,sibspSurvive)
+```
+
+__Parch:__ The number of parents plus the number of children on board the Titanic. The large majority had no children or parents on the ship. The effect of surviving doesn't seem to be related to the number of parents plus children.
+
+```{r Parch}
+ParchHist <- ggplot(combined,aes(x=factor(Parch)))+
+  geom_bar()+
+  geom_text(stat='count', aes(label=..count..), vjust=0)+
+  xlab("Parents Children Count")
+
+
+parchSurvive <- train %>% group_by(Parch) %>% 
+  summarize(survived=mean(Survived)) %>% 
+ggplot(.,aes(x=factor(Parch),y=survived))+
+  geom_col()+
+  xlab("Parents Children Count")+
+  ylab("Percentage Chance to Survive")
+  
+grid.arrange(ParchHist,parchSurvive)
+```
+
+__Fare:__ Fare is the ticket price to get on the ship. Most tickets sold were very cheap while there were a few that were very expensive. This makes the fare distribution skewed to the right. There was clearly a correlation between higher ticket price and surviving.
+
+```{r Fare}
+fareHist <- ggplot(combined[!is.na(combined$Fare),],aes(x=Fare))+
+  geom_histogram()
+
+
+fareSurvived <- train %>% group_by(Survived) %>% 
+  summarize(meanFare=mean(Fare,na.rm=TRUE)) %>% 
+ggplot(.,aes(x=factor(Survived),y=meanFare))+
+         geom_col()+
+  xlab("Survived")+
+  ylab("Mean Fare Price")
+
+grid.arrange(fareHist,fareSurvived,ncol=2)
+```
+
+__Cabin:__ Cabin number. It will be grouped by the first letter of the cabin in the feature engineering section. Here we can see that the most common section in cabin is the one with no letter. It also has the lowest survival rate at around 30%. Meanwhile, some other cabin groups have survival at around 70%.
+
+```{r cabin}
+countCabin <- train %>% 
+  mutate(firstLetter=substr(Cabin,1,1)) %>% 
+  group_by(firstLetter) %>% 
+  summarize(count=n()) %>%
+  ggplot(.,aes(x=firstLetter,y=count))+
+  geom_col()+
+  xlab("First letter of Cabin")
+
+survivalCabin <- train %>% 
+  mutate(firstLetter=substr(Cabin,1,1)) %>% 
+  group_by(firstLetter) %>% 
+  summarize(averageSurvival=mean(Survived,na.rm=TRUE)) %>% 
+  ggplot(.,aes(x=firstLetter,y=averageSurvival))+
+  geom_col()+
+  xlab("First letter of Cabin")+
+  ylab("Survival Percentage")
+grid.arrange(countCabin,survivalCabin,ncol=2)
+
+```
+
+The fare and cabin area by first letter are found to be correlated. One of the cheapest cabin areas, or the no name cabin area, was also one of the cheapest sections. Meanwhile, the high survival cabin areas were the most expensive and had the highest survival rates.
+
+```{r comparing fare to cabin group}
+
+train %>% 
+  mutate(firstLetter=substr(Cabin,1,1)) %>% 
+  group_by(firstLetter) %>% 
+  summarize(averageFare=mean(Fare)) %>% 
+  ggplot(.,aes(x=firstLetter,y=averageFare))+
+  geom_col()+
+  xlab("First letter of Cabin")+
+  ylab("Average Fare")
+```
+
+__Embarked:__ Represents where a person embarked on the ship. It contains 2 blank values that are not NA's. These values will be replaced in the imputation section. It appears people who boarded in Cherbours had a higher survival rate than people that boarded in Queenstown or Southampton. This can be explained from Cherbourg having the highest average ticket price. However, tickets were more expensive in Southampton than Queenstown, but did not result in a higher survival rate.
+
+* C = Cherbourg
+* Q = Queenstown
+* S = Southampton
+
+```{r embarked}
+embarkedCount <- ggplot(combined[combined$Embarked!="",],aes(x=Embarked,fill=Embarked))+
+  geom_bar()
+
+embarkedSurvival <- train %>% group_by(Embarked) %>% 
+  summarize(averageSurvival=mean(Survived)) %>%
+  filter(Embarked!="") %>% 
+ggplot(.,aes(x=Embarked,y=averageSurvival,fill=Embarked))+
+  geom_col()+
+  ylab("Average Survival")
+
+grid.arrange(embarkedCount,embarkedSurvival,ncol=2)
+```
+
+
+```{r embarked vs fare}
+combined %>% group_by(Embarked) %>% 
+  summarize(averagePrice=mean(Fare,na.rm=TRUE)) %>% 
+  filter(Embarked!="") %>% 
+  ggplot(.,aes(x=Embarked,y=averagePrice))+
+  geom_col()+
+  labs(title="Average Ticket Price from Where Embarked")+
+  ylab("Average Ticket Price")
+```
+
+__Name:__ Name of individual persons on the Titanic. If the title of the person is extracted out, there does appear to be a difference in survival rate from a persons title.
+
+```{r name}
+titleCount <- combined %>%
+  mutate(title=ifelse(grepl("MR",toupper(Name))==TRUE & grepl("MRS",toupper(Name))==FALSE,"Mr",ifelse(grepl("MRS",toupper(Name))==TRUE,"Mrs",ifelse(grepl("MISS",toupper(Name)),"Miss",ifelse(grepl("MASTER",toupper(Name))==TRUE,"Master","other"))))) %>% 
+  group_by(title) %>% 
+  summarize(count=n()) %>% 
+  ggplot(.,aes(x=title,y=count))+
+  geom_col()+
+  ylab("Count")+
+  xlab("Title")
+
+
+titleSurvival <- combined %>%
+  mutate(title=ifelse(grepl("MR",toupper(Name))==TRUE & grepl("MRS",toupper(Name))==FALSE,"Mr",ifelse(grepl("MRS",toupper(Name))==TRUE,"Mrs",ifelse(grepl("MISS",toupper(Name)),"Miss",ifelse(grepl("MASTER",toupper(Name))==TRUE,"Master","other"))))) %>% 
+  group_by(title) %>% 
+  summarize(survivedRatio=mean(Survived,na.rm=TRUE)) %>% 
+  ggplot(.,aes(x=title,y=survivedRatio))+
+  geom_col()+
+  ylab("Survival Rate")+
+  xlab("Title")
+
+grid.arrange(titleCount,titleSurvival,ncol=2)
+```
+
+
+# Feature Engineering
+
+## Created Features
+
+__title:__ Title will be replacing name which is the title of the person extracted out from their name. The name predictor will be dropped.
+```{r replacing name with title}
+combined <- combined %>%
+  mutate(title=ifelse(grepl("MR",toupper(Name))==TRUE & grepl("MRS",toupper(Name))==FALSE,"Mr",ifelse(grepl("MRS",toupper(Name))==TRUE,"Mrs",ifelse(grepl("MISS",toupper(Name)),"Miss",ifelse(grepl("MASTER",toupper(Name))==TRUE,"Master","other")))))
+
+combined <- combined %>% select(-Name)
+
+
+```
+
+__cabinLetters:__ Creating a feature based off first letter of cabin. The people who did not have a cabin number had a lower survival probability.
+
+```{r cabin letter}
+#pulling first letter
+combined <- combined %>% 
+  mutate(cabinLetters=substr(Cabin,1,1))
+
+table(combined$cabinLetters)
+#setting rare labels to mode
+combined[combined$cabinLetters %in% c("G","T"),"cabinLetters"] <- ""
+#replacing blank space factor with "none"
+combined[combined$cabinLetters=="","cabinLetters"] <- "none"
+
+combined %>% group_by(cabinLetters) %>% 
+  summarize(averageSurvived=mean(Survived,na.rm=TRUE)) %>% 
+ggplot(.,aes(x=cabinLetters,y=averageSurvived))+
+  geom_col()+
+  xlab("First Letter")+
+  ylab("Average Survived")
+```
+
+
+__cabinNumbers:__ A feature will be created based off the numbers of the cabin number. Any cabin that didn't have a number is assigned a value of 0, numbers above 75 were assigned a value of 1, and numbers below 75 were assigned a value of 2. It appears people with no cabin number had a lower survival rate than those with a cabin number. Also, people with a higher cabin number seemed to be less likely to survive than a lower cabin number. This might be because higher numbers were all towards a certain side of the ship. The cabin feature will then be dropped.
+
+```{r cabin numbers feature}
+
+combined <- combined %>% 
+  mutate(cabinNumbers=substr(word(Cabin,1),2,nchar(word(Cabin,1))))
+
+combined[combined$cabinNumbers=="","cabinNumbers"] <- 0
+
+combined$cabinNumbers <- as.integer(combined$cabinNumbers)
+
+combined[combined$cabinNumbers!=0 & combined$cabinNumbers<=75,"cabinNumbers"] <- 2
+
+combined[combined$cabinNumbers>75,"cabinNumbers"] <- 1
+
+combined %>% group_by(cabinNumbers) %>% 
+  summarize(averageSurvived=mean(Survived,na.rm=TRUE)) %>% 
+ggplot(.,aes(x=cabinNumbers,y=averageSurvived,fill=as.character(cabinNumbers)))+
+  geom_col()+
+  scale_fill_discrete(labels=c('No cabin', '#>75', '#<=75'))+
+  guides(fill=guide_legend(title="Cabin Number"))+
+  xlab("Cabin Numbers Grouped")+
+  ylab("Survival Rate")
+
+#dropping Cabin
+combined <- combined %>% select(-Cabin)
+
+
+```
+
+__hasSibSp:__ A predictor will be made for whether or not a person had a sibling or spouse on board the ship. It appears people who had at least one or more siblings or spouses had a higher survival percentage. This could be caused by increased coordination among them.
+```{r hasSibSp}
+combined <- combined %>% 
+  mutate(hasSibSp=ifelse(SibSp==0,0,1))
+
+hasSibSpCount <- ggplot(combined,aes(x=as.character(hasSibSp)))+
+  geom_bar()+
+  xlab("Has a Sibling or Spouse on Board")
+
+survivedSibSpCount <-
+  combined %>% group_by(hasSibSp) %>%
+  summarize(averageSurvived=mean(Survived,na.rm=TRUE)) %>% ggplot(.,aes(x=as.character(hasSibSp),y=averageSurvived))+
+              geom_col()+
+  xlab("Has a Sibling or Spouse")+
+  ylab("Survival Percentage")
+
+grid.arrange(hasSibSpCount,survivedSibSpCount,ncol=2)
+```
+
+# Imputation 
+
+## Linear Regression Imputation for Age
+
+Age contained 263 NA values. A linear regression model will be built using the predictors Pclass and SibSp as they have some correlation with age.
+
+```{r age imputation}
+# predicting age with lm
+
+ageMod <- lm(Age~Pclass+SibSp, data=combined,na.action = "na.omit")
+saveRDS(ageMod,"ageMod.rds")
+ageMod
+
+# imputing missing values in age
+combined[is.na(combined$Age),"Age"] <- 
+predict(ageMod,combined[is.na(combined$Age),])
+```
+
+## Imputation for Fare and Embarked
+
+Since Fare only contained 1 NA value, the most highly correlated predictor will be used for imputation. Since the Pclass value is the highest correlation, the median Fare value for when Pclass is equal to 3 will be used.
+
+```{r Fare imputation}
+#correlations with fare
+for(name in names(combined)){
+  if(is.numeric(combined[,name])){
+    print(name)
+    print(cor(combined[,name],combined[,"Fare"],use="complete.obs"))
+  }
+}
+
+combined[is.na(combined$Fare),]
+
+combined[is.na(combined$Fare),"Fare"] <- median(train[train$Pclass==3,"Fare"])
+```
+
+Embarked contained two observations that had a blank label. When looking at the different average ticket price by where embarked, we can see there is a large difference. Using this large difference we can make a guess that the two blank values boarded on the highest prices embarking area which was "C".
+```{r embarked imputation}
+
+combined %>% group_by(Embarked) %>% summarize(avgPrice=mean(Fare,na.rm=TRUE)) %>% 
+ggplot(.,aes(x=Embarked,y=avgPrice))+
+  geom_col()
+
+combined[combined$Embarked=="","Embarked"] <- "C"
+```
+
+# Feature Engineering #2
+
+## Creating Features
+
+__parent:__ Anybody that has one or more in the parent or children variable and is also over 18 will be labeled as a parent. It seems parents had priority of life rafts as they had a slightly higher survival rate. 
+
+```{r parents or children}
+combined <- combined %>%
+  mutate(parent=ifelse(Age>18 & Parch>0,1,0))
+
+parentCount <- ggplot(combined,aes(x=as.character(parent)))+
+  geom_bar()+
+  xlab("Parent")
+
+parentSurvival <- combined %>% group_by(parent) %>% 
+  summarize(survivalRate=mean(Survived,na.rm=TRUE)) %>% 
+  ggplot(.,aes(x=as.character(parent),y=survivalRate))+
+  geom_col()+
+  xlab("Parent")+
+  ylab("Survival Rate")
+
+grid.arrange(parentCount,parentSurvival,ncol=2)
+```
+
+Sex will be made into an factor variable of 0's and 1's instead of male and female.
+```{r sex to 0 and 1}
+combined[combined$Sex=="male","Sex"] <- 1
+combined[combined$Sex=="female","Sex"] <- 0
+
+combined$Sex <- as.integer(combined$Sex)
+```
+
+# Correlation Plot
+
+There doesn't seem to be many high correlations among the variables. The highest correlation is negative and between cabin numbers and socio-economic class (Pclass).
+
+```{r corr plot}
+numericVariables <- combined[!is.na(combined$Survived),] %>% select_if(is.numeric)
+
+corrplot(cor(numericVariables))
+```
+
+
+# Preparing for Modeling
+
+In the modeling section we will be using the caret package which needs all variables to be in numeric form. On top of that we will be centering and scaling our variables.
+
+## Train/Test split
+
+Dividing the combined data set back to train and test.
+```{r train test split}
+train <- combined[1:nrow(train),]
+test <- combined[(nrow(train)+1):nrow(combined),]
+```
+
+## Numeric Predictors
+
+Centering, scaling, and Box-Cox will be applied to non-ordinal numeric predictors. These variables are Age, SibSp, Parch, and Fare.
+
+```{r centering and scaling}
+centerScale <- preProcess(train[,c("Age","SibSp","Parch","Fare")],method=c("BoxCox","center","scale"))
+
+saveRDS(centerScale,"centerScale.rds")
+
+train <- predict(centerScale,train)
+test <- predict(centerScale,test)
+```
+
+## Ordinal Predictors
+
+The ordinal predictors are Pclass, cabinNumbers, hasSibSp, parent, and Sex. These are marked as ordinal because as the number decreases or increases we can expect an increase or decease in survival rate. Only Pclass is not on a scale starting from 0 so will be changed from its current scale of 1-3 to 0-2. 
+
+```{r ordinal predictors}
+#converting from 1-3 to 0-2
+
+train <- train %>% mutate(Pclass=Pclass-1)
+test <- test %>% mutate(Pclass=Pclass-1)
+```
+
+## Nominal Variables
+
+The character variables of Embarked and cabin letters will be converted into factors and then dummy variables using the caret package. 
+
+```{r nominal variables}
+train$Embarked <- as.factor(train$Embarked)
+train$cabinLetters <- as.factor(train$cabinLetters)
+train$title <- as.factor(train$title)
+
+test$Embarked <- as.factor(test$Embarked)
+test$cabinLetters <- as.factor(test$cabinLetters)
+test$title <- as.factor(test$title)
+
+dummied <- dummyVars(~.,train,fullRank = TRUE)
+saveRDS(dummied,"dummied.rds")
+
+train <- predict(dummied,train)
+test <- predict(dummied,test)
+
+train <- as.data.frame(train)
+test <- as.data.frame(test)
+
+kable(head(train))
+```
+
+The dependent variable will be made into a factor.
+
+```{r survived to factor}
+train$Survived <- as.factor(train$Survived)
+```
+
+
+# Modeling
+
+## Train Control
+
+Ten-fold cross validation repeated two times will be used for validation.
+
+```{r train control}
+ctrl <- trainControl(method="repeatedcv",number=10,
+                     repeats=2)
+```
+
+## Random Forest
+
+From the random forest model we are able to extract variable importance. It labels the predictors fare, age, sex, and title as the most important predictors in deciding whether or not a person survived. The train accuracy achieved was 83.6%.
+
+```{r random forest,eval=FALSE}
+set.seed(123)
+rfMod <- train(Survived~.,data=train,
+                     method="rf",
+                     tuneGrid=expand.grid(mtry=2:ncol(train)-1),
+                     trControl=ctrl)
+
+saveRDS(rfMod,"rfMod.rds")
+```
+
+```{r loading rf mod}
+rfMod <- readRDS("rfMod.rds")
+max(rfMod$results$Accuracy)
+varImp(rfMod)
+```
+
+## Logistic Regression
+
+The logistic regression model achieved an accuracy of 82.7%, slightly worse than the random forest model.
+
+```{r logistic regression,eval=FALSE}
+set.seed(4321)
+logisticMod <- train(Survived~.,data=train,
+                     method="glm",
+                     family="binomial",
+                     trControl=ctrl)
+saveRDS(logisticMod,"logisticMod.rds")
+```
+
+```{r loading logistic}
+logisticMod <- readRDS("logisticMod.rds")
+logisticMod
+```
+
+## Gradient Boosting
+
+The gradient boost model performed the best of the train data with an accuracy of 83.9%.
+
+```{r gradient boost, eval=FALSE}
+set.seed(8723)
+gbmMod <- train(Survived~., data=train, method='gbm', tuneLength=12, trControl=ctrl, verbose=FALSE)
+
+saveRDS(gbmMod,"gbmMod.rds")
+```
+
+
+```{r load gbm}
+gbmMod <- readRDS("gbmMod.rds")
+max(gbmMod$results$Accuracy)
+```
+## SVM
+
+The SVM model did not perform as well the other models with an accuracy of 82.3%. 
+
+```{r svm model, eval=FALSE}
+set.seed(20174)
+svmMod <- train(Survived~., data=train, method='svmRadial', trControl=ctrl,tuneLength=7)
+saveRDS(svmMod,"svmMod.rds")
+```
+
+```{r loading svm model}
+svmMod <- readRDS("svmMod.rds")
+max(svmMod$results$Accuracy)
+```
+
+## Results Modeling #1
+
+Gradient Boosted model performed the best of the four in the first modeling section.
+
+```{r comparing models}
+modelResults <- resamples(list(randomforest=rfMod,
+                               logistic=logisticMod,
+                            gbmMod=gbmMod,
+                            svmMod=svmMod))
+bwplot(modelResults,metric="Accuracy")
+```
+
+
+# Feature Engineering 3
+
+## Creating New Variables
+
+__fareGrouped:__ Since fare was one of the top predictors another predictor will be made grouping the fare variable based off different groups in the histogram.
+
+```{r fare grouped}
+ggplot(train,aes(x=Fare))+
+  geom_histogram()+
+  scale_x_continuous(limits=c(0,10),breaks=c(1,2,3,4,5,6,7,8,9,10))
+
+train <- train %>% 
+  mutate(fareGrouped=ifelse(Fare<1.5,0,ifelse(
+    Fare>=1.5 & Fare<3,1,ifelse(
+      Fare>=3 & Fare<4,2,3))))
+
+test <- test %>% 
+  mutate(fareGrouped=ifelse(Fare<1.5,0,ifelse(
+    Fare>=1.5 & Fare<3,1,ifelse(
+      Fare>=3 & Fare<4,2,3))))
+```
+
+
+__motherFather:__ Since sex was a top 5 predictor in terms of variable importance in the random forest model, a variable will be made based on if a parent was a father, mother, or neither. Then this newly created variable will be dummied.
+
+```{r mother father}
+train <- train %>% 
+  mutate(motherFather=ifelse(parent==1 & Sex==1,"Father",
+                             ifelse(parent==1 & Sex==0,"Mother","notParent")))
+
+test <- test %>% 
+  mutate(motherFather=ifelse(parent==1 & Sex==1,"Father",
+                             ifelse(parent==1 & Sex==0,"Mother","notParent")))
+
+train$motherFather <- as.factor(train$motherFather)
+test$motherFather <- as.factor(test$motherFather)
+
+# make dummy variable
+dummied <- dummyVars(~motherFather,train)
+saveRDS(dummied,"motherFather.rds")
+
+train <- cbind(train,as.data.frame(predict(dummied,train)))
+#dropping non-dummied variable
+train <- train %>% select(-motherFather)
+
+test <- cbind(test,as.data.frame(predict(dummied,test)))
+#dropping non-dummied variable
+test <- test %>% select(-motherFather)
+```
+
+# Modeling #2
+
+## Random Forest
+```{r random forest2,eval=FALSE}
+set.seed(2525)
+rfMod2 <- train(Survived~.,data=train,
+                     method="rf",
+                     tuneGrid=expand.grid(mtry=2:ncol(train)-1),
+                     trControl=ctrl)
+
+saveRDS(rfMod2,"rfMod2.rds")
+
+```
+
+```{r load rfmod2}
+rfMod2 <- readRDS("rfMod2.rds")
+max(rfMod2$results$Accuracy)
+```
+## Logistic Regression
+```{r logistic2,eval=FALSE}
+set.seed(42421)
+logisticMod2 <- train(Survived~.,data=train,
+                     method="glm",
+                     family="binomial",
+                     trControl=ctrl)
+
+saveRDS(logisticMod2,"logisticMod2.rds")
+```
+
+```{r load logistic2}
+logisticMod2 <- readRDS("logisticMod2.rds")
+max(logisticMod2$results$Accuracy)
+```
+
+
+## Gradient Boosting
+
+```{r gradient boost2, eval=FALSE}
+set.seed(87232)
+gbmMod2 <- train(Survived~., data=train, method='gbm', tuneLength=12, trControl=ctrl, verbose=FALSE)
+
+saveRDS(gbmMod2,"gbmMod2.rds")
+```
+
+
+```{r load gbm2}
+gbmMod2 <- readRDS("gbmMod2.rds")
+max(gbmMod2$results$Accuracy)
+```
+
+## SVM
+
+```{r svm model2, eval=FALSE}
+set.seed(20174)
+svmMod2 <- train(Survived~., data=train, method='svmRadial', trControl=ctrl,tuneLength=7)
+
+saveRDS(svmMod2,"svmMod2.rds")
+```
+
+```{r loading svm model2}
+svmMod2 <- readRDS("svmMod2.rds")
+max(svmMod2$results$Accuracy)
+```
+## Results Modeling #2
+
+The two best performing modeling were the gradient boost and logistic regression from the first modeling phase. The added predictors from the third feature engineering section hurt these two models. Meanwhile, with the added predictors the random forest model appeared to perform slightly better. 
+
+```{r comparing models2}
+modelResults2 <- resamples(list(randomforest=rfMod,
+                                randomforest2=rfMod2,
+                               logistic=logisticMod,
+                               logistic2=logisticMod2,
+                               gbmMod=gbmMod,
+                               gbmMod2=gbmMod2,
+                               svmMod=svmMod,
+                               svmMod2=svmMod2))
+                           
+                    
+bwplot(modelResults2,metric="Accuracy")
+```
+
+A correlation plot is made of the final models. Weak correlation signify that the models made a large number of different predictions. By combining models with weak correlations it is possible to achieve a higher prediction accuracy.
+
+```{r prediction correlation}
+#as.numeric turns to 1's and 0's
+predictionDF <- data.frame(RF=as.numeric(predict(rfMod2,test))-1,logistic=as.numeric(predict(logisticMod,test))-1,gbm=as.numeric(predict(gbmMod,test))-1,svm=as.numeric(predict(svmMod,test))-1)
+
+corrplot.mixed(cor(predictionDF[,c("RF","logistic","gbm","svm")]),order="hclust")
+```
+
+# Ensemble for Predictions
+
+An ensemble model is created using the four models. Since most of the people on the titanic died, a voting system will be used requiring three of the four models to predict survived in order for a prediction of survived. Otherwise, it will predict did not survive. The final submission will be based off these results.
+
+```{r final predictions}
+predictionDF$vote <- ifelse(predictionDF$RF+predictionDF$gbm+predictionDF$logistic+predictionDF$svm>=3,1,0)
+# creating final submission
+outputdf <- data.frame(PassengerId=PassengerId,Survived=predictionDF$vote)
+write.csv(outputdf,"submission1.csv",row.names = FALSE)
+
+```
+
+
+
+
+
+
+

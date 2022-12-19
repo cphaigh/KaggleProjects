@@ -1,0 +1,1980 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    css: "https://thebudgetactuary.github.io/Exam_SRM/style.css"
+    number_sections: true
+    toc: true
+    toc_depth: 3
+---
+
+\newcommand{\nextTab}{\textbf{Pick the next tab in order to see other variables.}}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+As per Kaggle Website:
+
+> Ask a home buyer to describe their dream house, and they probably won't begin with the height of the basement ceiling or the proximity to an east-west railroad. But this playground competition's dataset proves that much more influences price negotiations than the number of bedrooms or a white-picket fence.
+
+>With 79 explanatory variables describing (almost) every aspect of residential homes in Ames, Iowa, this competition challenges you to predict the final price of each home.
+
+Throughout this analysis we will perform feature engineering on predictors one by one in order to try to form the most accurate prediction for house prices. By the end of this analysis the models of ridge, lasso, and cubist will be performed in order to make the final predictions. Of the three, lasso ultimately performed the best and was chosen as the final submission.
+
+# Libraries and Importing Data
+
+## Libraries
+
+```{r libraries,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(plyr,include.only = "revalue")
+library(dplyr)
+library(caret)
+library(gridExtra)
+library(e1071) #naive bayes
+library(corrplot)
+library(Metrics)
+library(earth)
+library(knitr)
+options(scipen=999)
+```
+
+## Loading Data Sets
+```{r loading data}
+train <- read.csv("train.csv",stringsAsFactors = FALSE)
+test <- read.csv("test.csv",stringsAsFactors = FALSE)
+# Id will not be used in this study so will be dropped from both the train and test set.
+Id <- test$Id
+train <- train %>% 
+  select(-Id)
+test <- test %>% 
+  select(-Id)
+```
+
+### Dimensions of Train
+
+```{r train dim}
+print(paste("The train data set contains ", nrow(train)," rows and ",ncol(train), "variables."))
+```
+### Dimensions of Test
+```{r test dim}
+print(paste("The test data set contains ", nrow(test)," rows and ",ncol(test), "variables."))
+```
+### Combining Data Sets for Easier Analysis
+```{r combining train and test}
+test$SalePrice <- NA
+trainRows <- 1:nrow(train)
+combined <- rbind(train,test)
+```
+
+
+# Dependent Variable:
+
+The dependent variable we are trying to predict is __SalePrice:__ Sale prices of houses in Ames, Iowa. It exists in the train data set, but not in the test data set. It is skewed to the right with some very high trailing values. This will be addressed in the preparing for modeling section.
+
+```{r SalesPrice, message=FALSE}
+
+salePriceHisto <- ggplot(train,aes(x=SalePrice))+
+  geom_histogram()+
+  labs(title="SalePrice")
+salePriceBox <- ggplot(train,aes(x=SalePrice))+
+  geom_boxplot()+
+  labs(title="SalePrice")
+
+grid.arrange(salePriceHisto,salePriceBox,ncol=2)
+```
+
+# NA Values
+
+There exist many variables with at least one missing value in both the train and test sets.
+```{r train data}
+# train dataset
+for(name in names(train)){
+  if(sum(is.na(train[,name]))>0){
+    naSum=sum(is.na(train[,name]))
+    print(paste(name," NA's:",naSum))
+  }
+}
+```
+
+```{r test data}
+# test dataset
+for(name in names(test)){
+  if(sum(is.na(test[,name]))>0){
+    naSum = sum(is.na(test[,name]))
+    print(paste(name," Na's:",naSum))
+  }
+}
+
+```
+
+## Solving for Known NA Values
+
+A lot of the NA values that exist are known NA values such as NA replacing the option of none. These are known from the Kaggle website and will be fixed now.
+
+__Alley:__ NA's represent no alley access.
+
+```{r alley NAs}
+combined[is.na(combined$Alley),"Alley"] <- "noAccess"
+
+```
+
+__Basement Quality, Basement Condition, Basement Exposure, Basement Finish type 1, Basement Finish type 2:__ NA's represent no basement.
+```{r BsmtQual NAs}
+for(name in c("BsmtQual","BsmtCond","BsmtExposure","BsmtFinType1","BsmtFinType2")){
+  combined[is.na(combined[,name]),name] <- "none"
+}
+```
+
+__Fireplace Quality:__ Na's represent no fireplace.
+
+```{r Fireplace NAs}
+combined[is.na(combined$FireplaceQu),"FireplaceQu"] <- "none"
+```
+
+__Garage Type, Garage Finish, Garage Quality, Garage Condition:__ Na's represent no garages.
+
+```{r garages NAs}
+for(name in c("GarageType","GarageFinish","GarageQual","GarageCond")){
+  combined[is.na(combined[,name]),name] <- "none"
+}
+
+```
+
+__Pool Quality:__ NA's represent no pool.
+
+```{r PoolQC Nas}
+combined[is.na(combined$PoolQC),"PoolQC"] <- "noPool"
+
+```
+
+__Fence:__ NA's represent no fence.
+
+```{r Fence NAs}
+combined[is.na(combined$Fence),"Fence"] <- "noFence"
+```
+
+__Miscellaneous:__ NA's represent no misc. feature.
+```{r MiscFeature NAs}
+combined[is.na(combined$MiscFeature),"MiscFeature"] <- "none"
+```
+
+## Unknown NA Values
+
+### Remaining NA plot
+
+Most of the remaining NA values in a variable are very small. Sale Price can be ignored as those are the known NA values from the test data set in which we are trying to solve for.
+
+```{r na dataframe barchart}
+#creating na table
+naDF <- data.frame(sapply(combined,function(x) sum(is.na(x))))
+naDF$variable <- row.names(naDF)
+names(naDF) <- c("naCount","Variable")
+naDF <- naDF %>% 
+  select(Variable,naCount) %>% 
+  filter(naCount>0)
+```
+
+
+```{r remaining na plot, message=FALSE}
+#creating na plot
+ggplot(naDF,aes(x=reorder(Variable,desc(naCount)),y=naCount,fill=Variable))+
+  geom_col(aes(),show.legend=FALSE)+
+  labs(title="Remaining NA Values",
+       subtitle = "Combined Data Set")+
+  theme(axis.text.x=element_text(angle=45))+
+  xlab("Variable")+
+  ylab("NA Count")
+```
+
+
+
+We will now do a deep dive to understand if the remaining missing values can be filled in from the data. If not, we will use imputation.
+
+
+### Basement Variables Unknown NA's
+
+```{r basement nas}
+# counts of nas
+combined %>% 
+  select(BsmtFullBath,BsmtHalfBath,BsmtFinSF1,BsmtFinSF2,BsmtUnfSF,TotalBsmtSF) %>% 
+  sapply(.,function(x) sum(is.na(x)))
+
+```
+
+```{r Bsmtfullbath nas}
+# rows with two BsmtFullBath Nas values
+
+kable(combined[is.na(combined$BsmtFullBath),c("BsmtFullBath","BsmtHalfBath","BsmtFinSF1","BsmtFinSF2","BsmtUnfSF","TotalBsmtSF")]) 
+```
+
+For observation 2189 we can see the total basement square feet is 0, so both the basement bathroom variables will be set to 0. In observation 2121 all basement variables are NA so the assumption is going to made that this house has no basement. 
+```{r remaining basement na values}
+# observation 2189
+combined[2189,c("BsmtFullBath","BsmtHalfBath")] <- 0
+
+combined[2121,c("BsmtFullBath","BsmtHalfBath","BsmtFinSF1","BsmtFinSF2","BsmtUnfSF","TotalBsmtSF")] <- 0
+```
+
+### Garage NA Values
+
+Of the remaining NA values in the garage variables, GarageYrBlt (Garage year built) has a significant amount of NA values with 159, while garage area and garage cars have only 1.
+```{r garage na values}
+combined %>% select(GarageYrBlt,GarageArea,GarageCars) %>% 
+  sapply(.,function(x) sum(is.na(x)))
+```
+
+```{r garage area nas}
+# all garage variables
+garageVariables <- c("GarageArea","GarageCars","GarageCond","GarageFinish","GarageQual","GarageType","GarageYrBlt")
+
+# row where GarageArea is na
+combined[is.na(combined$GarageArea),garageVariables]
+```
+
+
+All garage variables of observation 2577 are pointing to that house not having a garage except garage type. Because of this, garage area and cars will be set to 0 and garage type will be changed from detached to none. 
+
+```{r garage area na}
+combined[2577,c("GarageArea","GarageCars")] <- 0
+combined[2577,"GarageType"] <- "none"
+
+
+```
+
+The NA's in GarageYrBlt (garage year built) will be addressed next. Since it is a numeric column there is no way to represent not having a garage such as "none". The options are to divide the variables into sections and make it into a factor column with a none section, or keep it numeric and impute missing values and possibly later on make another variable signifying no garage. The latter option of keeping it numeric will be used. 
+```{r garageYrBlt}
+print(paste("Of the combined rows,",(round(sum(combined$GarageYrBlt==combined$YearBuilt,na.rm=TRUE)/nrow(combined),2)*100),"%", "have the garage year built equalling the year the house was built."))
+```
+Since garage year built is the same as the house year built 76% of the time, the year the house was built will be used as the imputation value.
+```{r garage year built}
+combined[is.na(combined$GarageYrBlt),"GarageYrBlt"] <- combined[is.na(combined$GarageYrBlt),"YearBuilt"]
+```
+
+Utilities will be dropped, all but one observation are the same.
+```{r utilities}
+table(combined$Utilities,exclude=FALSE)
+combined <- combined %>% select(-Utilities)
+```
+
+### Mode Function:
+
+This will be used when doing mode imputation.
+```{r mode function}
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+```
+
+Exterior1st and exterior2nd each have one NA value. They will be replaced with their modes.
+```{r exterior1st and 2ndd}
+print(paste("Exterior1st NA's:",sum(is.na(combined$Exterior1st))))
+print(paste("Exterior2nd NA's:",sum(is.na(combined$Exterior2nd))))
+
+table(combined$Exterior1st,exclude=FALSE)
+table(combined$Exterior2nd,exclude=FALSE)
+
+combined[is.na(combined$Exterior1st),"Exterior1st"] <- getmode(combined$Exterior1st)
+combined[is.na(combined$Exterior2nd),"Exterior2nd"] <- getmode(combined$Exterior2nd)
+```
+
+MasVnrType and MasVnrArea contain 23 and 24 NA values. Of the 23 MasVnrType NA's MasVnrArea is also NA. There is one MasVnrArea observation that is NA without MasVnrType being NA.
+
+```{r masvnrtype and masvnrarea}
+sum(is.na(combined$MasVnrArea))
+sum(is.na(combined$MasVnrType))
+
+combined[is.na(combined$MasVnrArea),c("MasVnrArea","MasVnrType")]
+
+combined[is.na(combined$MasVnrType) & !is.na(combined$MasVnrArea),c("MasVnrArea","MasVnrType")]
+
+```
+
+For MasVnrType mode imputation will be used and for MasVnrArea median imputation will be used.
+
+```{r masvnrarea and masvnrtype}
+#mode imputation
+combined[is.na(combined$MasVnrArea),"MasVnrArea"] <- median(combined$MasVnrArea,na.rm=TRUE)
+
+combined[is.na(combined$MasVnrType),"MasVnrType"] <- median(combined$MasVnrType,na.rm=TRUE)
+```
+
+KitchenQual, Functional, SaleType, MSZoning, and Electrical each have only a couple NA's so mode imputation will be used.
+```{r kitchenqual functional saletype mszoning electrical}
+#sum of na's
+for(name in c("KitchenQual","Functional","SaleType","MSZoning","Electrical")){
+  print(name)
+  print(sum(is.na(combined[,name])))
+}
+
+#replacing na's with mode
+for(name in c("KitchenQual","Functional","SaleType","MSZoning","Electrical")){
+  combined[is.na(combined[,name]),name] <- getmode(combined[,name])
+}
+
+```
+
+
+
+
+Lot frontage has a considerable amount of NA values with 486. Instead of using median imputation, a simple linear regression model will be built with the variable with the highest correlation, which is lot area.
+```{r setting up for SLR}
+#finds all numeric variables
+numericVariable <- combined %>% 
+  select_if(is.numeric)
+
+#creates dataframe of each numeric variable correlation with LotFrontage
+lotFrontageCorr <- as.data.frame(sapply(numericVariable, function(x) cor(combined$LotFrontage,x,use="complete.obs")))
+
+names(lotFrontageCorr) <- "corValues"
+
+lotFrontageCorr %>% 
+  arrange(corValues) %>% 
+  tail(2)
+```
+
+### Simple Linear Regression Model for Imputation
+```{r slr model for imputation}
+# building SLR model
+slrImputation <- lm(LotFrontage~LotArea,data=combined[!is.na(combined$LotFrontage),])
+
+#results of model
+slrImputation
+
+#imputing lot frontage using lot area
+combined[is.na(combined$LotFrontage),"LotFrontage"] <- predict(slrImputation,combined[is.na(combined$LotFrontage),])
+
+
+```
+The NA values are now all resolved.
+
+# ggplot Shortcut Functions
+
+## Continuous ggplot Function
+
+```{r ggplot for numeric, message=FALSE}
+### plots for numeric variables
+numericggplot <- function(variable){
+  histo <- ggplot(combined,aes(x=combined[,variable]))+
+    geom_histogram()+
+    xlab(variable)+
+    theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=14,face="bold"))+
+    labs(title=variable)
+  
+trainData <- combined[!is.na(combined$SalePrice),]
+  
+  scattero <- ggplot(trainData,aes(x=trainData[,variable],y=SalePrice))+
+    geom_point()+
+    geom_smooth(method = "lm", se=FALSE, color="black")+
+    xlab(variable)+
+    ylab("SalePrice")+
+    theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=14,face="bold"))+
+    labs(title=variable)
+  
+grid.arrange(histo,scattero,ncol=2)
+}
+```
+
+## Discrete ggplot Function
+
+```{r discrete ggplot}
+discreteggplot <- function(name){
+  
+  discretePlot <- ggplot(combined,aes(x=combined[,name]))+
+    geom_bar()+xlab(name)
+  
+trainData <- combined[!is.na(combined$SalePrice),]  
+
+  discreteBox <- ggplot(trainData,aes(x=as.character(trainData[,name]),y=SalePrice))+
+    geom_boxplot()+xlab(name)
+  
+grid.arrange(discretePlot,discreteBox,ncol=2)
+}
+```
+
+# Exploring the Data Variable by Variable
+
+## All Numeric Variables{.tabset .tabset-pills}
+
+For numeric variables in general if it is an ordered predictor we will make it an integer and if not we will make it a double. This will make the pre-processing (scaling, centering...) much easier.
+
+### Lot Frontage and Area
+
+__LotFrontage:__ Linear feet of street connected to property. There appears to be four outliers with lot frontage above 300 including observations 250, 336, 935, and 1299.
+```{r lotfrontage, fig.height = 6, fig.width = 15, message=FALSE}
+numericggplot("LotFrontage")
+kable(combined[combined$LotFrontage>300,])
+```
+__LotArea:__ Lot size in square feet. Contains only four values above 100,000 including observations 250, 314, 336, and 707.
+
+```{r lotarea,fig.height=6,fig.width=15, message=FALSE}
+numericggplot("LotArea")
+kable(combined[combined$LotArea>100000,])
+```
+
+$\nextTab$
+
+### Misc Value
+
+__MiscVal:__ Value of miscellaneous feature. Most have 0, will likely make new predictor for whether or not a house has a miscellaneous feature.
+
+```{r MiscVal, message=FALSE}
+numericggplot("MiscVal")
+```
+
+$\nextTab$
+
+### Year Built, Year Remodeled, Garage Year Built 
+
+__YearBuilt:__ Original construction date. The newer the house, the higher the house price. However, there are a couple house built before 1900 that are very expensize. Investigating we can see that these houses had a recent remodel. Possibly an added feature later for when remodel does not equal year built.
+```{r yearbuilt, fig.height=6,fig.width=15, message=FALSE}
+numericggplot("YearBuilt")
+kable(combined[combined$SalePrice>200000 & combined$YearBuilt<1900 & !is.na(combined$SalePrice),])
+```
+
+
+
+__YearRemodAdd:__ Remodel date (same as construction date if no remodeling or additions).
+
+```{r yearRemodAdd, message=FALSE}
+numericggplot("YearRemodAdd")
+print(paste(round(sum(combined$YearRemodAdd==combined$YearBuilt)/nrow(combined)*100,0),"% of houses did not have a remodel."))
+```
+
+__GarageYrBlt:__ Year garage was built. Most of the time the garage was built when the house was built. There will be an added feature later on to depict whether or not the garage was added after the house was built. There is a clear typo with garage year built after 2200. This value will be replaced with the year that the house was built.
+
+```{r GarageYrBlt, message=FALSE}
+numericggplot("GarageYrBlt")
+
+#percentage of time garage was built when house was built
+print(paste(round(sum(combined$GarageYrBlt==combined$YearBuilt)/nrow(combined)*100,0),"% of garages built were built when the house was built."))
+
+#comparing garage year built with house year built
+ggplot(combined,aes(x=YearBuilt,y=GarageYrBlt))+
+  geom_point()
+
+#removing typo
+combined[combined$GarageYrBlt>2100,"GarageYrBlt"] <- combined[combined$GarageYrBlt>2100,"YearBuilt"]
+```
+
+$\nextTab$
+
+### Garage Cars and Area
+
+__GarageCars:__ Size of garage in car capacity.
+
+__GarageArea:__ Size of garage in square feet.
+
+There exists a strong correlation between garage cars and garage area which makes sense. One of the predictors will likely be dropped later on.
+```{r garage area and cars, message=FALSE}
+discreteggplot("GarageCars")
+numericggplot("GarageArea")
+
+#
+round(cor(combined$GarageCars,combined$GarageArea),2)
+```
+
+$\nextTab$
+
+### MasVnrArea and MasVnrType
+
+__MasVnrArea:__ Masonry veneer area in square feet. There exists a lot of zeros signifying what should be none for __MasVnrType:__ masonry veneer type. Instead, there are three observations with a labeled masonry veneer type that is not none, but have 0 for masonry veneer area. For these observations we will set the 0's to the median masonry veneer area of those respective masonry veneer types.
+
+```{r MasVnrArea, message=FALSE}
+numericggplot("MasVnrArea")
+table(combined$MasVnrType)
+combined[combined$MasVnrArea==0 & combined$MasVnrType!="None",c("MasVnrArea","MasVnrType")]
+# replacing 0's of BrkFace with median of MasVnrArea that have BrkFace
+combined[combined$MasVnrArea==0 & combined$MasVnrType=="BrkFace","MasVnrArea"] <- median(combined[combined$MasVnrType=="BrkFace","MasVnrArea"])
+
+# replacing 0 of Stone with median of MasVnrArea that has Stone
+combined[combined$MasVnrArea==0 & combined$MasVnrType=="Stone","MasVnrArea"] <- median(combined[combined$MasVnrType=="Stone","MasVnrArea"])
+```
+
+$\nextTab$
+
+### Basement Area Predictors
+
+__BsmtFinSF1:__ Type 1 finished square feet.
+
+__BsmtFinSF2:__ Type 2 finished square feet.
+
+__BsmtUnfSF:__ Unfinished square feet of basement area.
+
+__TotalBsmtSF:__ Total square feet of basement area. Is the sum of finished square feet 1, finished square feet 2, and unfinished square feet. There is one outlier with a total basement square feet above 6000, observation 1299.
+
+```{r Bsmt Numeric, message=FALSE}
+numericggplot("BsmtFinSF1")
+numericggplot("BsmtFinSF2")
+numericggplot("BsmtUnfSF")
+numericggplot("TotalBsmtSF")
+# Sum of all FinSF1, FinSF2, and UnfSF equal total basement sf.
+sum(combined$TotalBsmtSF==combined$BsmtFinSF1+combined$BsmtFinSF2+combined$BsmtUnfSF)/nrow(combined)
+
+kable(combined[combined$TotalBsmtSF>6000,])
+```
+
+$\nextTab$
+
+### Upstairs SF Area
+
+__X1stFlrSF:__ First Floor square feet.
+
+__X2ndFlrSF:__ Second floor square feet.
+
+__LowQualFinSF:__ Low quality finished square feet (all floors).
+
+__GrLivArea:__ Above grade (ground) living area square feet.
+
+First floor square feet + second floor square feet + low quality square feet = above ground living area for each observation. Observation 1299 comes up again as an outlier, will likely be dropped later on.
+```{r house sf, message=FALSE}
+numericggplot("X1stFlrSF")
+numericggplot("X2ndFlrSF")
+numericggplot("LowQualFinSF")
+numericggplot("GrLivArea")
+sum(combined$X1stFlrSF+combined$X2ndFlrSF+combined$LowQualFinSF==combined$GrLivArea)/nrow(combined)
+
+kable(combined[combined$GrLivArea>5000,])
+```
+
+$\nextTab$
+
+### Number of Bathrooms
+
+__BsmtFullBath:__ Basement full bathrooms.
+
+__BsmtHalfBath:__ Basement half bathrooms.
+
+__FullBath:__ Full bathrooms above grade.
+
+__HalfBath:__ Half baths above grade.
+
+```{r bathrooms, message=FALSE}
+#BsmtFullBath plot
+discreteggplot("BsmtFullBath")
+#BsmtHalfBath plot
+discreteggplot("BsmtHalfBath")
+#FullBath
+discreteggplot("FullBath")
+#HalfBath
+discreteggplot("HalfBath")
+```
+
+There is no variable for the total bathrooms in a house. This will be added later on in the feature engineering section.
+
+$\nextTab$
+
+### Bedrooms, Kitchens, Total Rooms
+
+__BedroomAbvGr:__ Bedrooms above grade (does NOT include basement bedrooms).
+
+__KitchenAbvGr:__ Kitchens above grade.
+
+__TotRmsAbvGrd:__ Total rooms above grade (does not include bathrooms).
+
+The total rooms does not equal bedrooms + kitchens. A variable can be made later to address rooms that are not kitchens or bedrooms.
+
+```{r rooms above ground, message=FALSE}
+ggplot(combined[!is.na(combined$SalePrice),],aes(x=as.factor(BedroomAbvGr),y=SalePrice))+geom_boxplot()+xlab("Bedrooms Above Ground")
+
+ggplot(combined[!is.na(combined$SalePrice),],aes(x=as.factor(KitchenAbvGr),y=SalePrice))+geom_boxplot()+xlab("Kitchens Above Ground")
+
+ggplot(combined[!is.na(combined$SalePrice),],aes(x=as.factor(TotRmsAbvGrd),y=SalePrice))+geom_boxplot()+xlab("Total Rooms Above Ground")
+```
+
+$\nextTab$
+
+### Fireplaces
+
+__Fireplaces:__ Number of fireplaces. There is only one house that contains 4 fireplaces and it occurs in the test set. 
+
+```{r fireplaces}
+discreteggplot("Fireplaces")
+```
+
+$\nextTab$
+
+### Porch Variables
+
+__OpenPorchSF:__ Open porch area in square feet.
+
+__EnclosedPorch:__ Enclosed porch area in square feet.
+
+__X3SsnPorch:__ Three season porch area in square feet.
+
+__ScreenPorch:__ Screen porch area in square feet.
+
+A predictor will be made later for whether or not a house has a porch.
+
+```{r porch square feet, message=FALSE}
+numericggplot("OpenPorchSF")
+numericggplot("EnclosedPorch")
+numericggplot("X3SsnPorch")
+numericggplot("ScreenPorch")
+```
+
+__WoodDeckSF:__ Wood deck area in square feet.
+
+```{r wooddeck sf, message=FALSE}
+numericggplot("WoodDeckSF")
+```
+
+$\nextTab$
+
+### Pool Area
+
+__PoolArea:__ Pool area in square feet. When the quality of the pool is labeled as "noPool", the pool area should be zero. This is not the case for three observations. When comparing the size of the pool to the quality there seems to be no pattern. The values of quality for these observations will be filled in with good, which is the middle value of pool quality.
+```{r pool area, message=FALSE}
+numericggplot("PoolArea")
+
+#checking if relation between size and quality
+combined[combined$PoolArea!=0,c("PoolArea","PoolQC")] %>% arrange(PoolArea)
+
+#setting the three pool quality values from nopool to Gd
+combined[combined$PoolQC=="noPool" & combined$PoolArea!=0,c("PoolQC")] <- "Gd"
+```
+
+## Converting to Double
+
+Will make pre-processing section easier.
+```{r to double}
+for(name in c("LotFrontage","LotArea","YearBuilt","YearRemodAdd","MasVnrArea","BsmtFinSF1","BsmtFinSF2","BsmtUnfSF","TotalBsmtSF","X1stFlrSF","X2ndFlrSF","LowQualFinSF","GrLivArea","BsmtFullBath","BsmtHalfBath","FullBath","HalfBath","BedroomAbvGr","KitchenAbvGr","TotRmsAbvGrd","Fireplaces","GarageYrBlt","GarageCars","GarageArea","WoodDeckSF","OpenPorchSF","EnclosedPorch","X3SsnPorch","ScreenPorch","PoolArea","MiscVal")){
+  combined[,name] <- as.double(combined[,name])
+}
+```
+
+## Date/Time Predictors
+
+__MoSold:__ Month Sold (MM).
+
+__YrSold:__ Year Sold (YYYY).
+
+Most houses seem to sell in the summer months but the average house price per month sold seems pretty even. There is no clear trend upwards or downwards per month over the five years.
+
+```{r Mo Sold Year Sold, message=FALSE, warning=FALSE}
+ggplot(combined,aes(x=as.character(MoSold)))+
+  geom_bar()+
+  scale_x_discrete(limits=seq(1,12))+
+  xlab("Months")
+
+ggplot(combined[!is.na(combined$SalePrice),],aes(x=as.character(MoSold),y=SalePrice))+
+  geom_boxplot()+
+  scale_x_discrete(limits=seq(1,12))+
+  xlab("Months")
+  
+```
+
+From the previous charts we can see the end of the range of observations is in August 2010, which explains why 2010 has the least number of houses sold. There appears to be a gradual decrease in the median price of a house sold from 2006 to 2010. Both month sold and year sold will be converted to character predictors as there is no apparent ordering of sale price within them.
+```{r YrSold, message=FALSE}
+discreteggplot("YrSold")
+
+combined$YrSold <- as.character(combined$YrSold)
+combined$MoSold <- as.character(combined$MoSold)
+```
+
+
+## Ordered Predictors{.tabset .tabset-pills}
+
+### Overall Quality
+
+__OverallQual:__ Rates the overall material and finish of the house
+
+* 10 Very Excellent
+* 9	Excellent
+* 8	Very Good
+* 7	Good
+* 6	Above Average
+* 5	Average
+* 4	Below Average
+* 3	Fair
+* 2	Poor
+* 1	Very Poor
+
+There is a clear increase in the sale of house prices as the quality of the house increases.
+```{r overall quality, message=FALSE, warning=FALSE}
+overallqualBar <- ggplot(combined,aes(x=OverallQual))+
+  geom_bar()+
+  scale_x_discrete(limits=seq(1,10))+
+  xlab("Overall Quality")
+
+overallqualBox <- ggplot(combined[!is.na(combined$SalePrice),],aes(x=as.character(OverallQual),y=SalePrice))+
+  geom_boxplot()+
+  scale_x_discrete(limits=seq(1,10))+
+  xlab("Overall Quality")
+
+grid.arrange(overallqualBar,overallqualBox,ncol=2)
+
+```
+
+$\nextTab$
+
+### Overall Condition
+
+__OverallCond:__ Rates the overall condition of the house.
+
+* 10	Very Excellent
+* 9	Excellent
+* 8	Very Good
+* 7	Good
+* 6	Above Average	
+* 5	Average
+* 4	Below Average	
+* 3	Fair
+* 2	Poor
+* 1	Very Poor
+
+There is one outlier with overall condition 2 and another at overall condition 6 (observations 379 and 692).
+
+```{r OverallCond, message=FALSE, warning=FALSE}
+ggplot(combined[!is.na(combined$SalePrice),],aes(x=as.character(OverallCond),y=SalePrice))+
+  geom_boxplot()+
+  scale_x_discrete(limits=seq(1,10))+
+  xlab("Overall Condition")
+
+kable(combined[combined$OverallCond==2 & combined$SalePrice>350000 & !is.na(combined$SalePrice),])
+
+kable(combined[combined$OverallCond==6 & combined$SalePrice>600000 & !is.na(combined$SalePrice),])
+
+```
+
+$\nextTab$
+
+### External Quality and Condition
+
+__ExterQual:__ Evaluates the quality of the material on the exterior. 
+
+* Ex	Excellent
+* Gd	Good
+* TA	Average/Typical
+* Fa	Fair
+* Po	Poor
+		
+__ExterCond:__ Evaluates the present condition of the material on the exterior.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Average/Typical
+* Fa	Fair
+* Po	Poor
+
+External quality and external condition will both be made into ordered predictors.
+```{r ExterQual and ExterCond, message=FALSE}
+noNone <- c('Po' = 0, 'Fa' = 1, 'TA' = 2, 'Gd' = 3, 'Ex' = 4)
+#making into ordered
+combined$ExterQual<-as.integer(revalue(combined$ExterQual, noNone))
+table(train$ExterQual)
+
+combined$ExterCond<-as.integer(revalue(combined$ExterCond, noNone))
+
+discreteggplot("ExterQual")
+discreteggplot("ExterCond")
+
+```
+
+$\nextTab$
+
+### Basement Quality and Condition
+
+__BsmtQual:__ Evaluates the height of the basement.
+
+* Ex	Excellent (100+ inches)	
+* Gd	Good (90-99 inches)
+* TA	Typical (80-89 inches)
+* Fa	Fair (70-79 inches)
+* Po	Poor (<70 inches
+* NA	No Basement
+		
+__BsmtCond:__ Evaluates the general condition of the basement.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Typical - slight dampness allowed
+* Fa	Fair - dampness or some cracking or settling
+* Po	Poor - Severe cracking, settling, or wetness
+* NA	No Basement
+
+Both basement quality and basement condition will be made into ordered predictors.
+```{r bsmtqual and bsmt cond, message=FALSE}
+table(combined$BsmtCond)
+withNone <-c('none' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+
+combined$BsmtQual <- as.integer(revalue(combined$BsmtQual,withNone))
+combined$BsmtCond <- as.integer(revalue(combined$BsmtCond,withNone))
+
+discreteggplot("BsmtQual")
+discreteggplot("BsmtCond")
+
+```
+
+$\nextTab$
+
+### Kitchen Quality
+
+__KitchenQual:__ Kitchen quality.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Typical/Average
+* Fa	Fair
+* Po	Poor
+
+Kitchen quality made into ordered.
+```{r KitchenQual, message=FALSE}
+combined$KitchenQual <- as.integer(revalue(combined$KitchenQual,noNone))
+
+discreteggplot("KitchenQual")
+
+```
+
+$\nextTab$
+
+### Fireplace Quality
+
+__FireplaceQu:__ Fireplace quality.
+
+* Ex	Excellent - Exceptional Masonry Fireplace
+* Gd	Good - Masonry Fireplace in main level
+* TA	Average - Prefabricated Fireplace in main living area or Masonry Fireplace in basement
+* Fa	Fair - Prefabricated Fireplace in basement
+* Po	Poor - Ben Franklin Stove
+* NA	No Fireplace
+
+Converted to ordered.
+```{r fireplace quality, message=FALSE}
+combined$FireplaceQu <- as.integer(revalue(combined$FireplaceQu,withNone))
+discreteggplot("FireplaceQu")
+
+```
+
+$\nextTab$
+
+### Garage Quality and Condition
+
+__GarageQual:__ Garage quality.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Typical/Average
+* Fa	Fair
+* Po	Poor
+* NA	No Garage
+		
+__GarageCond:__ Garage condition.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Typical/Average
+* Fa	Fair
+* Po	Poor
+* NA	No Garage
+
+Converting both to ordered.
+```{r garagequality and condition, message=FALSE}
+combined$GarageQual <- as.integer(revalue(combined$GarageQual,withNone))
+combined$GarageCond <- as.integer(revalue(combined$GarageCond,withNone))
+
+discreteggplot("GarageQual")
+discreteggplot("GarageCond")
+```
+
+$\nextTab$
+
+### Pool Quality
+
+__PoolQC:__ Pool quality.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Average/Typical
+* Fa	Fair
+* NA	No Pool
+
+Pool quality made into ordered. Can make feature later for whether or not a house has a pool.
+```{r PoolQC, message=FALSE}
+poolOrdered <- c('noPool'=0,'Fa'=1,'TA'=2,'Gd'=3,'Ex'=4)
+combined$PoolQC <- as.integer(revalue(combined$PoolQC,poolOrdered))
+
+print(paste("Only ",sum(combined$PoolQC!=0)," of",nrow(combined)," houses have a pool."))
+discreteggplot("PoolQC")
+
+
+```
+
+$\nextTab$
+
+### Street
+
+__Street:__ Type of road access to property.
+
+* Grvl	Gravel	
+* Pave	Paved
+
+Made into ordered predictor with paved being superior to gravel.
+```{r street2, message=FALSE}
+combined[combined$Street=="Grvl","Street"] <- 0
+combined[combined$Street=="Pave","Street"] <- 1
+combined$Street <- as.integer(combined$Street)
+
+discreteggplot("Street")
+print(paste("There are only ",sum(combined$Street==0)," houses that have a gravel steet."))
+
+```
+
+$\nextTab$
+
+### LandSlope
+
+__LandSlope:__ Slope of property.
+
+* Gtl	Gentle slope
+* Mod	Moderate Slope	
+* Sev	Severe Slope
+
+Made into ordered with Gtl>Mod>Sev.
+```{r landslope2, message=FALSE}
+#order labeling
+combined[combined$LandSlope=="Gtl","LandSlope"] <- 0
+combined[combined$LandSlope=="Mod","LandSlope"] <- 1
+combined[combined$LandSlope=="Sev","LandSlope"] <- 2
+
+discreteggplot("LandSlope")
+
+```
+
+$\nextTab$
+
+### Heating quality, Central Air, Electrical
+
+__HeatingQC:__ Heating quality and condition.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Average/Typical
+* Fa	Fair
+* Po	Poor
+
+__CentralAir:__ Central air conditioning.
+
+* N	No
+* Y	Yes
+
+__Electrical:__ Electrical system.
+
+* SBrkr	Standard Circuit Breakers & Romex
+* FuseA	Fuse Box over 60 AMP and all Romex wiring (Average)	
+* FuseF	60 AMP Fuse Box and mostly Romex wiring (Fair)
+* FuseP	60 AMP Fuse Box and mostly knob & tube wiring (poor)
+* Mix	Mixed
+
+Heating quality, central air, and electrical  will all be changed into ordered.
+
+```{r heatingqc2, message=FALSE}
+noNone
+
+combined$HeatingQC <- as.integer(revalue(combined$HeatingQC,noNone))
+
+combined$CentralAir <- as.integer(revalue(combined$CentralAir,c('N'=0,'Y'=1)))
+
+combined$Electrical <- as.integer(revalue(combined$Electrical,c('Mix'=0,'FuseP'=1,'FuseF'=2,'FuseA'=3,'SBrkr'=4)))
+
+
+discreteggplot("HeatingQC")
+discreteggplot("CentralAir")
+discreteggplot("Electrical")
+```
+
+$\nextTab$
+
+### Masonry Veneer Type
+
+__MasVnrType:__ Masonry veneer type.
+
+* BrkCmn	Brick Common
+* BrkFace	Brick Face
+* CBlock	Cinder Block
+* None	None
+* Stone	Stone
+
+Made into ordered predictor with the sequential order of None, Brick Common, Brick Face, and then stone. Cinder block is not in the dataset so it wont be included, not sure where it would rank.
+```{r masvnrtype2, message=FALSE}
+combined$MasVnrType <- as.integer(revalue(combined$MasVnrType,c('None'=0,'BrkCmn'=1,'BrkFace'=2,'Stone'=3)))
+discreteggplot("MasVnrType")
+```
+
+$\nextTab$
+
+### Basement Exposure
+
+__BsmtExposure:__ Refers to walkout or garden level walls.
+
+* Gd	Good Exposure
+* Av	Average Exposure (split levels or foyers typically score average or above)	
+* Mn	Mimimum Exposure
+* No	No Exposure
+* NA	No Basement
+
+Made into ordered based on level of exposure.
+```{r bsmt exposure2, message=FALSE}
+table(combined$BsmtExposure)
+combined$BsmtExposure <- as.integer(revalue(combined$BsmtExposure,c('none'=0,'No'=1,'Mn'=2,'Av'=3,'Gd'=4)))
+discreteggplot("BsmtExposure")
+```
+
+$\nextTab$
+
+### Garage Finish
+
+__GarageFinish:__ Interior finish of the garage.
+
+* Fin	Finished
+* RFn	Rough Finished	
+* Unf	Unfinished
+* NA	No Garage
+
+Garage finish made into ordered.
+```{r garagefinish 2, message=FALSE}
+combined$GarageFinish <- as.integer(revalue(combined$GarageFinish,c('none'=0,'Unf'=1,'RFn'=2,'Fin'=3)))
+
+discreteggplot("GarageFinish")
+```
+
+$\nextTab$
+
+### Paved Drive
+
+__PavedDrive:__ Paved driveway.
+
+* Y	Paved 
+* P	Partial Pavement
+* N	Dirt/Gravel
+
+```{r paved drive2, message=FALSE}
+combined$PavedDrive <- as.integer(revalue(combined$PavedDrive,c('N'=0,'P'=1,'Y'=2)))
+
+discreteggplot("PavedDrive")
+```
+
+$\nextTab$
+
+### Fence
+
+__Fence:__ Fence quality.
+
+* GdPrv	Good Privacy
+* MnPrv	Minimum Privacy
+* GdWo	Good Wood
+* MnWw	Minimum Wood/Wire
+* NA	No Fence
+ 
+It appears having no fence translates to a higher sales price than having a fence. Converting this predictor to ordered with having no fence being the most valuable.
+```{r fence2, message=FALSE}
+combined$Fence <- as.integer(revalue(combined$Fence,c('MnWw'=0,'GdWo'=1,'MnPrv'=2,'GdPrv'=3,'noFence'=4)))
+
+discreteggplot("Fence")
+
+```
+
+
+## Converting to Integers
+
+Will make pre-processing section easier.
+
+```{r converting to integers}
+for(name in c("Street","OverallQual","OverallCond","ExterQual","ExterCond","BsmtQual","BsmtCond","BsmtExposure","HeatingQC","CentralAir","KitchenQual","FireplaceQu","GarageFinish","GarageQual","GarageCond","PavedDrive","PoolQC","Fence")){
+  combined[,name] <- as.integer(combined[,name])
+}
+```
+
+
+
+## Character Predictors{.tabset .tabset-pills}
+
+### MSSubClass
+
+__MSSubClass:__ Identifies the type of dwelling involved in the sale.	
+
+* 20	1-STORY 1946 & NEWER ALL STYLES
+* 30	1-STORY 1945 & OLDER
+* 40	1-STORY W/FINISHED ATTIC ALL AGES
+* 45	1-1/2 STORY - UNFINISHED ALL AGES
+* 50	1-1/2 STORY FINISHED ALL AGES
+* etc (11 more labels)
+
+The type of dwelling is currently a numeric predictor, it should be a factor. For now it will be made into a string and factor later on. Rare labels will also be addressed later on.
+```{r mssubclass2, message=FALSE}
+str(combined$MSSubClass)
+combined$MSSubClass <- as.character(combined$MSSubClass)
+
+discreteggplot("MSSubClass")
+```
+
+$\nextTab$
+
+### MSZoning
+
+__MSZoning:__ Identifies the general zoning classification of the sale.
+
+* A	Agriculture
+* C	Commercial
+* FV	Floating Village Residential
+* I	Industrial
+* RH	Residential High Density
+* RL	Residential Low Density
+* RP	Residential Low Density Park 
+* RM	Residential Medium Density
+
+```{r mszoning2, message=FALSE}
+discreteggplot("MSZoning")
+```
+
+$\nextTab$
+
+### Alley
+
+Alley: Type of alley access to property.
+
+* Grvl	Gravel
+* Pave	Paved
+* NA 	No alley access
+
+```{r alley2, message=FALSE}
+discreteggplot("Alley")
+```
+
+$\nextTab$
+
+### Lotshape
+
+__LotShape:__ General shape of property.
+
+* Reg	Regular	
+* IR1	Slightly irregular
+* IR2	Moderately Irregular
+* IR3	Irregular
+
+Could be an ordered predictor, box-plot doesn't support this claim though so leaving as character.
+```{r lotshape2, message=FALSE}
+discreteggplot("LotShape")
+```
+
+$\nextTab$
+
+### Land Contour
+
+__LandContour:__ Flatness of the property.
+
+* Lvl	Near Flat/Level	
+* Bnk	Banked - Quick and significant rise from street grade to building
+* HLS	Hillside - Significant slope from side to side
+* Low	Depression
+
+```{r landcontour2}
+discreteggplot("LandContour")
+```
+
+$\nextTab$
+
+### Lot Config.
+
+__LotConfig:__ Lot configuration.
+
+* Inside	Inside lot
+* Corner	Corner lot
+* CulDSac	Cul-de-sac
+* FR2	Frontage on 2 sides of property
+* FR3	Frontage on 3 sides of property
+
+```{r lotconfig2, message=FALSE}
+discreteggplot("LotConfig")
+```
+
+$\nextTab$
+
+### Neighborhood
+
+__Neighborhood:__ Physical locations within Ames city limits.
+
+* Blmngtn	Bloomington Heights
+* Blueste	Bluestem
+* BrDale	Briardale
+* BrkSide	Brookside
+* etc (21 other labels)
+
+There exists 25 possible labels for neighborhood, some form of grouping will have to be used later on.
+```{r neighborhood2, message=FALSE}
+discreteggplot("Neighborhood")
+```
+
+$\nextTab$
+
+### Condition1 and Condition2
+
+__Condition1:__ Proximity to various conditions.
+
+* Artery	Adjacent to arterial street
+* Feedr	Adjacent to feeder street	
+* Norm	Normal	
+* RRNn	Within 200' of North-South Railroad
+* RRAn	Adjacent to North-South Railroad
+* PosN	Near positive off-site feature--park, greenbelt, etc.
+* PosA	Adjacent to postive off-site feature
+* RRNe	Within 200' of East-West Railroad
+* RRAe	Adjacent to East-West Railroad
+	
+__Condition2:__ Proximity to various conditions (if more than one is present).
+
+* Artery	Adjacent to arterial street
+* Feedr	Adjacent to feeder street	
+* Norm	Normal	
+* RRNn	Within 200' of North-South Railroad
+* RRAn	Adjacent to North-South Railroad
+* PosN	Near positive off-site feature--park, greenbelt, etc.
+* PosA	Adjacent to postive off-site feature
+* RRNe	Within 200' of East-West Railroad
+* RRAe	Adjacent to East-West Railroad
+
+Most of the houses have condition1 equal to condition2, one of the columns will likely be dropped.
+```{r condition1 and condition2 2, message=FALSE}
+print(paste(round(sum((combined$Condition1==combined$Condition2)/nrow(combined)*100),2),"% of houses have condition1 = condition2"))
+
+discreteggplot("Condition1")
+discreteggplot("Condition2")
+```
+
+$\nextTab$
+
+### Building Type and House Style
+
+__BldgType:__ Type of dwelling.
+
+* 1Fam	Single-family Detached	
+* 2FmCon	Two-family Conversion; originally built as one-family dwelling
+* Duplx	Duplex
+* TwnhsE	Townhouse End Unit
+* TwnhsI	Townhouse Inside Unit
+
+__HouseStyle:__ Style of dwelling.
+
+* 1Story	One story
+* 1.5Fin	One and one-half story: 2nd level finished
+* 1.5Unf	One and one-half story: 2nd level unfinished
+* 2Story	Two story
+* 2.5Fin	Two and one-half story: 2nd level finished
+* 2.5Unf	Two and one-half story: 2nd level unfinished
+* SFoyer	Split Foyer
+* SLvl	Split Level
+
+House Style has some rare labels that may require grouping.
+```{r bldgtype, message=FALSE}
+discreteggplot("BldgType")
+discreteggplot("HouseStyle")
+```
+
+$\nextTab$
+
+### Roof Style and Material
+
+__RoofStyle:__ Type of roof.
+
+* Flat	Flat
+* Gable	Gable
+* Gambrel	Gabrel (Barn)
+* Hip	Hip
+* Mansard	Mansard
+* Shed	Shed
+		
+__RoofMatl:__ Roof material.
+
+* ClyTile	Clay or Tile
+* CompShg	Standard (Composite) Shingle
+* Membran	Membrane
+* Metal	Metal
+* Roll	Roll
+* Tar&Grv	Gravel & Tar
+* WdShake	Wood Shakes
+* WdShngl	Wood Shingles
+
+Roof material has four levels that only occur once. These levels will either need to be dropped or grouped.
+```{r roof style and material2, message=FALSE}
+discreteggplot("RoofStyle")
+discreteggplot("RoofMatl")
+table(combined$RoofMatl)
+```
+
+$\nextTab$
+
+### Exterior1st and 2nd
+
+__Exterior1st:__ Exterior covering on house.
+
+* AsbShng	Asbestos Shingles
+* AsphShn	Asphalt Shingles
+* BrkComm	Brick Common
+* BrkFace	Brick Face
+* CBlock	Cinder Block
+* etc (12 other levels)
+	
+__Exterior2nd:__ Exterior covering on house (if more than one material).
+
+* AsbShng	Asbestos Shingles
+* AsphShn	Asphalt Shingles
+* BrkComm	Brick Common
+* BrkFace	Brick Face
+* CBlock	Cinder Block
+* etc (12 other levels)
+
+Most of the time exterior1st is the same as exterior2nd, one of the predictors will likely be dropped.
+```{r exterior1st and 2nd 2, message=FALSE}
+print(paste(round((sum(combined$Exterior1st==combined$Exterior2nd)/nrow(combined)*100),0),"% of the time exterior1st = exterior2nd."))
+
+exterior1stBar <- ggplot(combined,aes(x=Exterior1st))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45))
+  
+
+exterior1stBox <- ggplot(combined[!is.na(combined$SalePrice),],aes(x=Exterior1st,y=SalePrice))+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 45))
+
+grid.arrange(exterior1stBar,exterior1stBox, ncol=2)
+
+exterior2ndBar <- ggplot(combined,aes(x=Exterior2nd))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45))
+  
+
+exterior2ndBox <- ggplot(combined[!is.na(combined$SalePrice),],aes(x=Exterior2nd,y=SalePrice))+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 45))
+
+grid.arrange(exterior2ndBar,exterior2ndBox, ncol=2)
+```
+
+$\nextTab$
+
+### Foundation
+
+__Foundation:__ Type of foundation.
+
+* BrkTil	Brick & Tile
+* CBlock	Cinder Block
+* PConc	Poured Contrete	
+* Slab	Slab
+* Stone	Stone
+* Wood	Wood
+
+```{r foundation2, message=FALSE}
+discreteggplot("Foundation")
+```
+
+$\nextTab$
+
+### BsmtFinType 1 and 2
+
+__BsmtFinType1:__ Rating of basement finished area.
+
+* GLQ	Good Living Quarters
+* ALQ	Average Living Quarters
+* BLQ	Below Average Living Quarters	
+* Rec	Average Rec Room
+* LwQ	Low Quality
+* Unf	Unfinshed
+* NA	No Basement
+
+
+__BsmtFinType2:__ Rating of basement finished area (if multiple types).
+
+* GLQ	Good Living Quarters
+* ALQ	Average Living Quarters
+* BLQ	Below Average Living Quarters	
+* Rec	Average Rec Room
+* LwQ	Low Quality
+* Unf	Unfinshed
+* NA	No Basement
+
+When plotting the sale price didn't increase as would be expected when moving from no basement to good living quarters. Because of this, these two predictors will remain character instead of being made into ordered.
+```{r bsmtfintype1 and 2 2nd, message=FALSE}
+print(paste(round((sum(combined$BsmtFinType1==combined$BsmtFinType2)/nrow(combined))*100,0),"% of the time BsmtFinType1=BsmtFinType2"))
+
+discreteggplot("BsmtFinType1")
+discreteggplot("BsmtFinType2")
+```
+
+$\nextTab$
+
+### Heating
+
+__Heating:__ Type of heating.
+
+* Floor	Floor Furnace
+* GasA	Gas forced warm air furnace
+* GasW	Gas hot water or steam heat
+* Grav	Gravity furnace	
+* OthW	Hot water or steam heat other than gas
+* Wall	Wall furnace
+
+Nearly all houses have gas forced heating.
+```{r heating2, message=FALSE}
+discreteggplot("Heating")
+table(combined$Heating)
+```
+
+$\nextTab$
+
+### Functional
+
+__Functional:__ Home functionality (Assume typical unless deductions are warranted).
+
+* Typ	Typical Functionality
+* Min1	Minor Deductions 1
+* Min2	Minor Deductions 2
+* Mod	Moderate Deductions
+* Maj1	Major Deductions 1
+* Maj2	Major Deductions 2
+* Sev	Severely Damaged
+* Sal	Salvage only
+
+```{r Functional 2, message=FALSE}
+discreteggplot("Functional")
+```
+
+$\nextTab$
+
+### Garage Type
+
+__GarageType:__ Garage location.
+
+* 2Types	More than one type of garage
+* Attchd	Attached to home
+* Basment	Basement Garage
+* BuiltIn	Built-In (Garage part of house - typically has room above garage)
+* CarPort	Car Port
+* Detchd	Detached from home
+* NA	No Garage
+
+```{r garagetype2, message=FALSE}
+discreteggplot("GarageType")
+```
+
+$\nextTab$
+
+### Misc Feature
+
+__MiscFeature:__ Miscellaneous feature not covered in other categories.
+
+* Elev	Elevator
+* Gar2	2nd Garage (if not described in garage section)
+* Othr	Other
+* Shed	Shed (over 100 SF)
+* TenC	Tennis Court
+* NA	None
+
+```{r miscfeature2, message=FALSE}
+discreteggplot("MiscFeature")
+
+print(paste(round(sum(combined$MiscFeature=="none")/nrow(combined)*100,0),"% of houses don't have a miscellaneous feature."))
+```
+
+$\nextTab$
+
+### Sale Type and Condition
+
+__SaleType:__ Type of sale.
+
+* WD 	Warranty Deed - Conventional
+* CWD	Warranty Deed - Cash
+* VWD	Warranty Deed - VA Loan
+* New	Home just constructed and sold
+* COD	Court Officer Deed/Estate
+* Con	Contract 15% Down payment regular terms
+* ConLw	Contract Low Down payment and low interest
+* ConLI	Contract Low Interest
+* ConLD	Contract Low Down
+* Oth	Other
+
+__SaleCondition:__ Condition of sale.
+
+* Normal	Normal Sale
+* Abnorml	Abnormal Sale -  trade, foreclosure, short sale
+* AdjLand	Adjoining Land Purchase
+* Alloca	Allocation - two linked properties with separate deeds, typically condo with a garage unit	
+* Family	Sale between family members
+* Partial	Home was not completed when last assessed (associated with New Homes)
+
+Both are dominated by one label and have a number of rare labels.
+```{r saletype and saleconditon2, message=FALSE}
+discreteggplot("SaleType")
+discreteggplot("SaleCondition")
+```
+
+# Base Score
+
+Now that the data is complete and visualized, a random forest model will be run to find baseline results. Throughout the rest of the analysis we will apply techniques to try to beat this score. 
+
+## Train Control for RF
+```{r train control}
+custom_summary = function(data, lev = NULL, model = NULL) {
+library(Metrics)
+out = rmsle(data[, "obs"], data[, "pred"])
+names(out) = c("rmsle")
+out
+}
+ctrl <- trainControl(method="cv",
+                     number=10,
+                     summaryFunction = custom_summary,
+                     allowParallel = TRUE)
+```
+
+## Random Forest Baseline Model
+```{r rf baseline, warning=FALSE,eval=FALSE}
+set.seed(123)
+rfBase <- train(SalePrice~.,data=combined[!is.na(combined$SalePrice),],
+                trControl=ctrl,
+                metric="rmsle",
+                maximize=FALSE,
+                tuneGrid=expand.grid(mtry=seq(20,40,by=5)))
+
+saveRDS(rfBase,"rfBase.rds")
+```
+
+
+```{r load rfBase}
+rfBase <- readRDS("rfBase.rds")
+min(rfBase$results$rmsle)
+```
+
+# Variable Importance and Correlation
+
+## Variable Importance
+
+From the baseline random forest model we are also able to gather the variable importance in predicting sales price. The top 10 listed important variables are overall quality, above ground living area, garage cars, external quality, total basement square feet, kitchen quality, 1st floor square feet, garage area, year built, and basement quality.
+```{r variable importance}
+varImp(rfBase)
+```
+
+## Correlation
+
+The top 10 correlated predictors with sales price is overall quality, above ground living area, external quality, kitchen quality, garage cars, garage area, total basement square feet, first floor square feet, basement quality, and full bathrooms. 9 of the top 10 ranked predictors in the random forest model are also in the top 10 most correlated predictors. 
+```{r correlations}
+numericVariables <- combined %>% 
+  select_if(is.numeric)
+
+SalePriceCorrelations <- as.data.frame(sapply(numericVariables,function(x) cor(x,numericVariables$SalePrice,use="complete.obs")))
+
+names(SalePriceCorrelations) <- c("correlation")
+
+SalePriceCorrelations %>% 
+  filter(abs(correlation)>.5) %>% 
+  arrange(desc(correlation))
+```
+
+Highly correlated predictors will be dropped in preparing for modeling section.
+```{r corrplot, message=FALSE}
+corrplot(cor(numericVariables,use="complete.obs"))
+```
+
+
+# Feature Engineering
+
+Now that our data is complete and we have visualized our data, we will begin creating our own variables in the hopes of achieving better model accuracy.
+
+## Created Features{.tabset .tabset-pills}
+
+### hasRemodel
+
+__Has Remodel:__ A feature will be created for whether or not a house has a remodel. It will take place in any house where the remodel year does not equal the year the house was built. The houses with a remodel on average sell for slightly less, this might be because houses that had a remodel are typically over 20 years older on average.
+
+```{r hasRemodel}
+combined <- combined %>% mutate(hasRemodel=ifelse(YearBuilt!=YearRemodAdd,1,0))
+#made into character for now, factor later
+combined$hasRemodel <- as.character(combined$hasRemodel)
+
+# nearly half the houses have had a remodel
+table(combined$hasRemodel)
+
+ggplot(combined[!is.na(combined$SalePrice),],aes(x=hasRemodel,y=SalePrice))+
+  geom_boxplot()+xlab("Has a Remodel")
+#average year built with and without remodel
+combined %>% group_by(hasRemodel) %>% 
+  summarize(avgYearBuilt=mean(YearBuilt))
+
+
+combined$hasRemodel <- as.integer(combined$hasRemodel)
+```
+
+$\nextTab$
+
+### Total Bathrooms
+
+__Total Bathrooms:__ There are four predictors for number of bathrooms, but no predictor for total bathrooms. Total Bathrooms will be created here.
+```{r total bathrooms, message=FALSE}
+#creating total bathroom predictor
+combined <- combined %>% mutate(totalBathrooms=FullBath+HalfBath+BsmtFullBath+BsmtHalfBath)
+
+ggplot(combined[!is.na(combined$SalePrice),],aes(x=as.character(totalBathrooms),y=SalePrice))+
+  geom_boxplot()+ xlab("Total Bathrooms")
+
+combined$totalBathrooms <- as.double(combined$totalBathrooms)
+```
+
+$\nextTab$
+
+### Other Rooms
+
+__Other Rooms:__ There was a predictor for kitchens and a predictor for bedrooms, but there was no predictor for rooms that were not kitchens or bedrooms. We will address this now.
+
+```{r Other rooms, message=FALSE}
+#not bedrooms or kitchens = totalRooms-bedrooms-kitchens
+combined <- combined %>% mutate(otherRooms=TotRmsAbvGrd-KitchenAbvGr-BedroomAbvGr)
+
+discreteggplot("otherRooms")
+
+combined$otherRooms <- as.double(combined$otherRooms)
+```
+
+$\nextTab$
+
+### Garage Built After House
+
+__Garage was Built After House:__ A binary predictor will be added if a garage was built after the house was built. It appears the sale price is lower if a garage was added after the house was built even though newly added garages on average are bigger. This can again be explained because the houses with added garages are on average much older.
+
+```{r garage built after, message=FALSE}
+# creating predictor
+combined$newGarage <- ifelse(combined$GarageYrBlt!=combined$YearBuilt,1,0)
+# most houses that have a garage were built with house
+discreteggplot("newGarage")
+
+# mean size and year built
+combined %>% group_by(newGarage) %>% summarize(mean(GarageArea),
+                                            mean(YearBuilt))
+
+combined$newGarage <- as.integer(combined$newGarage)
+```
+
+$\nextTab$
+
+### hasPorch
+
+__Has a Porch:__ A predictor can be added for whether or not a house has a porch.
+
+```{r has porch, message=FALSE}
+#if these 4 predictors = 0, then no porch
+combined$hasPorch <- ifelse(combined$OpenPorchSF==0 & combined$X3SsnPorch== 0 & combined$ScreenPorch== 0 & combined$EnclosedPorch==0,0,1)
+
+discreteggplot("hasPorch")
+
+combined$hasPorch <- as.integer(combined$hasPorch)
+```
+
+$\nextTab$
+
+### hasPool
+
+__Has Pool:__ Creating a variable to show if a house has a pool. Appears sale price of a house with a pool is considerably higher.
+
+```{r hasPool, message=FALSE}
+# if pool area is 0, then no pool
+combined$hasPool <- ifelse(combined$PoolArea==0,0,1)
+
+discreteggplot("hasPool")
+
+combined$hasPool <- as.integer(combined$hasPool)
+```
+
+$\nextTab$
+
+### hasMiscFeature
+
+__Has a Miscellaneous Feature:__ There is predictor describing which miscellaneous feature, but not a feature for whether or not a house has a miscellaneous feature in general. 
+```{r hasMisc}
+table(combined$MiscFeature)
+combined$hasMisc <- ifelse(combined$MiscFeature=="none",0,1)
+
+combined$hasMisc <- as.integer(combined$hasMisc)
+```
+
+$\nextTab$
+
+### Age of House Split
+
+__Extra Age of House Predictor:__ Since it is unlikely that the depreciation of a house from 2005 to 2000 would be the same as a house from 1940 to 1935, a variable is created to try to address this. Using a mars model with one pivot it appears an added year in the age of a house has less meaning for houses built before 1971. 
+
+```{r mars model, message = FALSE}
+# Building mars model to find hinge point
+yearBuiltBinned <- earth(SalePrice~YearBuilt,combined[!is.na(combined$SalePrice),],nprune = 2)
+
+#building data frame of predicted values from the mars model
+predictedValues <- data.frame(YearBuilt=combined[!is.na(combined$SalePrice),"YearBuilt"],predict(yearBuiltBinned,combined[!is.na(combined$SalePrice),]))
+head(predictedValues)
+
+#plotting what it looks like with the hinge function
+predictedValues %>% 
+  ggplot(.,aes(YearBuilt,SalePrice))+
+  geom_smooth(color="red",size=3)+
+  geom_point(data=combined[!is.na(combined$SalePrice),],aes(x=YearBuilt,y=SalePrice))+
+  geom_point()+
+  annotate("segment",x=1971,xend=1971,y=0,yend=350000,color="red")+
+  labs(title="Hinge at 1971")
+
+#adding the binary variable
+combined$OldHouse <- ifelse(combined$YearBuilt<=1971,1,0)
+
+combined$OldHouse <- as.integer(combined$OldHouse)
+
+```
+
+
+## Outlier
+
+Observation 1299 will be dropped as an outlier.
+```{r removing obs1299}
+ggplot(combined[!is.na(combined$SalePrice),],aes(x=TotalBsmtSF,y=SalePrice))+
+  geom_point()
+
+kable(combined[1299,])
+# removing obs 1299
+combined <- combined[-1299,]
+
+```
+
+# Preparing for Modeling
+
+## Removing Highly Correlated Predictors
+
+Predictors that have a correlation above .8 with another predictor will be dropped. The predictor that will be dropped is the one with lower correlation with the dependent variable sales price.
+```{r removing highly correlated predictors}
+# creating data frame of correlations
+allCorrelations <- as.data.frame(as.table(cor(numericVariables[,-52]))) #52 is sales price
+
+#selecting only those with correlation above .8
+highCorrelations <- allCorrelations %>% 
+  filter(abs(Freq)>.8 & Freq!=1) %>% 
+  arrange(desc(Freq))
+# removing doubles such as garagecondition:garagequality and garagequality:garagecondition
+noRepeats <- highCorrelations[seq(1,nrow(highCorrelations),by=2),]
+noRepeats
+
+#printing the name that has the lesser of the two correlations with sales price
+for(i in 1:nrow(noRepeats)){
+  #columns one correlation with sales price
+  cor1=abs(cor(combined[,as.character(noRepeats[i,1])],combined$SalePrice,use="complete.obs"))#column two correlation with sales price
+  cor2=abs(cor(combined[,as.character(noRepeats[i,2])],combined$SalePrice,use="complete.obs"))#printing lesser name
+  ifelse(cor1<cor2,print(paste(cor1,noRepeats[i,1])),print(paste(cor2,noRepeats[i,2])))
+}
+#dropping those names from dataset
+combined <- combined %>% select(-GarageCond,-GarageArea,-Fireplaces,-GarageYrBlt,-PoolArea,-TotRmsAbvGrd,-X1stFlrSF)
+```
+
+## Dummy Variables
+```{r creating dummy variables}
+stringVariables <- combined %>% select_if(is.character)
+
+makeDummy <- dummyVars(~.,data=stringVariables)
+
+dummiedVars <- predict(makeDummy,stringVariables)
+
+dummiedVars <- as.data.frame(dummiedVars)
+
+```
+
+## Removing Labels Under 1% of Data
+
+Removing labels that are in under 1% of the train data. 69 dummy variables were dropped.
+
+```{r removing under 1 percent}
+onePercent <- nrow(combined[!is.na(combined$SalePrice),])/100 #14.59
+
+print(paste("Before there were",ncol(dummiedVars),"dummied variables."))
+
+# removing all predictors that are under 1%
+for(i in ncol(dummiedVars):1){
+  #1459 is the number of train rows
+  if(sum(dummiedVars[1:1459,i])<onePercent){
+    dummiedVars <- dummiedVars[,-i]
+  }
+}
+
+print(paste("Now there are",ncol(dummiedVars),"dummied variables."))
+```
+
+
+## Standardizing Predictors
+
+Box-Cox and standardization will be applied to all numeric variables that are not ordered. Since we set all ordered variables to integers, we can call all non-ordered integers very easily. Caret package will be used to achieve this.
+```{r standardizing predictors}
+doubleVariables <- combined %>% select_if(is.double)
+kable(head(doubleVariables,3))
+
+makeCenterScale <- preProcess(doubleVariables,method=c("BoxCox","center","scale"))
+
+centerAndScaled <- predict(makeCenterScale,doubleVariables)
+
+kable(head(centerAndScaled,3))
+```
+
+### Log Transformation to Sale Price
+
+When applying the log transformation to the sale price we can see it follows a near normal distribution. Also, since the final Kaggle submission is in RMSLE we can now use carets base numerical summary which is RMSE.
+```{r applying log trans to sale price, message=FALSE}
+woLog <- ggplot(combined[!is.na(combined$SalePrice),],aes(x=SalePrice))+
+  geom_histogram()
+
+wLog <- combined[!is.na(combined$SalePrice),] %>% 
+  mutate(logSalePrice=log(SalePrice)) %>% 
+ggplot(.,aes(x=logSalePrice))+
+         geom_histogram()+
+  xlab("log(SalePrice)")
+
+grid.arrange(woLog,wLog,ncol=2)
+
+# making saleprice the log(saleprice)
+
+SalePrice <- log(combined$SalePrice)
+
+combined <- combined %>% select(-SalePrice)
+
+```
+
+
+Here the data will be put back together. This means combining the ordered predictors, center and scaled predictors, and dummied predictors back to one data set. 
+```{r combining back}
+#selecting the remaining terms (ordered predictors)
+orderPredictors <- combined %>% select_if(is.integer)
+
+combined <- cbind(SalePrice,orderPredictors,centerAndScaled,dummiedVars)
+
+dim(combined)
+```
+
+## Non-Existent Labels
+
+Having labels that only exist in train but not in test can lead to over fitting. Having labels that only occur in test but not in train can lead to errors. Therefor,  labels that exist only in train but not in test and vice versa will be removed. Found that this problem does not occur after removing values that existed in less than 1% of the train data.
+```{r removing labels that dont exist}
+#ordering so saleprice is first
+combined <- combined %>% select(SalePrice,everything())
+
+#creating train and test sets
+train <- combined[!is.na(combined$SalePrice),]
+
+test <- combined[is.na(combined$SalePrice),]
+
+#if all 0's for train data portion removing that predictor from combined
+counter <- 0
+for(i in ncol(train):2){
+  if(sum(train[,i])==0){
+    counter=counter+1
+    print(names(train)[i])
+    combined <- combined[,-i]
+  }
+  if(i==2){print(paste("For the train data:", counter," variables were dropped"))}
+}
+
+ #if all 0's for the test data portion removing that predictor from combined
+counter <- 0
+for(i in ncol(test):2){
+  if(sum(test[,i])==0){
+    print(names(test)[i])
+    combined <- combined[,-i]
+    counter=counter+1
+  }
+  if(i==2){print(paste("For the test data:", counter," variables were dropped"))}
+}
+```
+
+
+The data is now pre-processed and in the format I wanted. Now, a train-test split can be performed before modeling.
+```{r train test split modeling 1}
+train <- combined[!is.na(combined$SalePrice),]
+test <- combined[is.na(combined$SalePrice),]
+```
+
+
+# Modeling
+
+Throughout this modeling phase we will perform ridge, lasso, and cubist models.
+
+## Train Control
+```{r traincontrol}
+#10 fold cross validation
+ctrl <- trainControl(method="cv",
+                     number=10,
+                     verbose=FALSE)
+```
+
+## Lasso
+
+The lasso model is good at conquering multicollinearity which is likely a problem in this data set. It achieved a train RMSLE of .1179. 
+```{r lasso mod, eval=FALSE}
+set.seed(432)
+lassoMod <- train(SalePrice~.,data=train,
+                  method="glmnet",
+                  trControl=ctrl,
+                  tuneGrid=expand.grid(alpha=1,lambda=seq(0.001,.1,by=.001)))
+
+saveRDS(lassoMod,"lassoMod.rds")
+```
+
+```{r lasso mod results}
+lassoMod <- readRDS("lassoMod.rds")
+min(lassoMod$results$RMSE)
+```
+
+## Ridge
+
+The ridge model did not perform as well as the lasso model. 
+```{r ridge, eval=FALSE}
+set.seed(223)
+ridgeMod <- train(SalePrice~.,data=train,
+                  method="glmnet",
+                  trControl=ctrl,
+                  tuneGrid=expand.grid(alpha=0,lambda=seq(.001,.1,by=.001)))
+
+saveRDS(ridgeMod,"ridgeMod.rds")
+```
+
+```{r ridge mod results}
+ridgeMod <- readRDS("ridgeMod.rds")
+min(ridgeMod$results$RMSE)
+```
+
+## Cubist
+
+The cubist model appears to perform ever so slightly better than the lasso model, but is much more complex.
+```{r cubist, eval=FALSE}
+set.seed(1234)
+cubistMod <- train(SalePrice~.,data=train,
+                    method="cubist",
+                    trControl=ctrl,
+                    tuneGrid=expand.grid(committees=seq(70,100,by=5),neighbors=c(7,8,9)))
+saveRDS(cubistMod,"cubistMod.rds")
+```
+
+```{r cubist mod results}
+cubistMod <- readRDS("cubistMod.rds")
+min(cubistMod$results$RMSE)
+```
+
+## Comparing Models
+```{r comparing models, message=FALSE}
+modelResults <- resamples(list(lasso=lassoMod,
+                               ridge=ridgeMod,
+                            cubist=cubistMod))
+bwplot(modelResults,metric="RMSE")
+```
+
+# Final Submission
+
+I submitted both the cubist and lasso model predictions. The lasso model slightly outperformed the cubist model and achieved a RMSLE of .12273.  
+```{r Making final submission}
+#exp to transform back to original units
+outputDF <- data.frame(ID=Id,SalePrice=exp(predict(lassoMod,test)))
+
+write.csv(x = outputDF,file = "submission717lasso.csv",row.names=FALSE)
+```
+

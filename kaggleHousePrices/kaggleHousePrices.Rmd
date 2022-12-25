@@ -1,5 +1,5 @@
 ---
-title: "R Notebook"
+title: "Kaggle House Prices"
 output:
   html_document:
     css: "https://thebudgetactuary.github.io/Exam_SRM/style.css"
@@ -18,9 +18,9 @@ knitr::opts_chunk$set(echo = TRUE)
 
 As per Kaggle Website:
 
-> Ask a home buyer to describe their dream house, and they probably won't begin with the height of the basement ceiling or the proximity to an east-west railroad. But this playground competition's dataset proves that much more influences price negotiations than the number of bedrooms or a white-picket fence.
+Ask a home buyer to describe their dream house, and they probably won't begin with the height of the basement ceiling or the proximity to an east-west railroad. But this playground competition's dataset proves that much more influences price negotiations than the number of bedrooms or a white-picket fence.
 
->With 79 explanatory variables describing (almost) every aspect of residential homes in Ames, Iowa, this competition challenges you to predict the final price of each home.
+With 79 explanatory variables describing (almost) every aspect of residential homes in Ames, Iowa, this competition challenges you to predict the final price of each home.
 
 Throughout this analysis we will perform feature engineering on predictors one by one in order to try to form the most accurate prediction for house prices. By the end of this analysis the models of ridge, lasso, and cubist will be performed in order to make the final predictions. Of the three, lasso ultimately performed the best and was chosen as the final submission.
 
@@ -59,11 +59,15 @@ test <- test %>%
 ```{r train dim}
 print(paste("The train data set contains ", nrow(train)," rows and ",ncol(train), "variables."))
 ```
+
 ### Dimensions of Test
+
 ```{r test dim}
 print(paste("The test data set contains ", nrow(test)," rows and ",ncol(test), "variables."))
 ```
+
 ### Combining Data Sets for Easier Analysis
+
 ```{r combining train and test}
 test$SalePrice <- NA
 trainRows <- 1:nrow(train)

@@ -1,0 +1,2180 @@
+---
+title: "Kaggle House Prices"
+output:
+  html_document:
+    css: "https://thebudgetactuary.github.io/Exam_SRM/style.css"
+    number_sections: true
+    toc: true
+    toc_depth: 3
+---
+
+\newcommand{\nextTab}{\textbf{Pick the next tab in order to see other variables.}}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+As per Kaggle Website:
+
+Ask a home buyer to describe their dream house, and they probably won't begin with the height of the basement ceiling or the proximity to an east-west railroad. But this playground competition's dataset proves that much more influences price negotiations than the number of bedrooms or a white-picket fence.
+
+With 79 explanatory variables describing (almost) every aspect of residential homes in Ames, Iowa, this competition challenges you to predict the final price of each home.
+
+Throughout this analysis we will perform feature engineering on predictors one by one in order to try to form the most accurate prediction for house prices. By the end of this analysis the models of random forest, lasso, and cubist will be performed in order to make the final predictions. Of the three, cubist ultimately performed the best and was chosen as the final submission.
+
+# Libraries
+
+```{r libraries,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(plyr,include.only = "revalue")
+library(dplyr)
+library(caret)
+library(gridExtra)
+library(e1071) #naive bayes
+library(corrplot)
+library(Metrics)
+library(earth)
+library(knitr)
+library(gt)
+options(scipen=999)
+```
+
+# Data
+
+There will be two data sets used in this analysis, the train data set and the test data set. The train data set contains 1460 observations and 81 variables and will be used for the data analysis and model building. The test data set will only used in the end to make the final predictions and contains 1459 rows and 80 variables, with the missing variable being the sale price which we are trying to predict.
+
+__Train Data Set:__
+
+```{r loading train}
+train <- read.csv("train.csv",stringsAsFactors = FALSE)
+gt(head(train))
+```
+
+__Test Data Set:__
+
+```{r loading test}
+test <- read.csv("test.csv",stringsAsFactors = FALSE)
+
+gt(head(test))
+```
+
+
+# NA Values
+
+There exist many variables with at least one missing value in train set.
+
+```{r train data}
+naDF <- data.frame(sapply(train,function(x) sum(is.na(x))))
+names(naDF) <- "NA_Count"
+naDF$variable <- row.names(naDF)
+naDF <- naDF %>% 
+  filter(NA_Count>0) %>% 
+  arrange(desc(NA_Count))
+
+ggplot(naDF,aes(x=reorder(variable,NA_Count),y=NA_Count,fill=variable))+
+  geom_col()+
+  geom_text(aes(label=NA_Count), hjust=0)+
+  coord_flip()+
+  theme(legend.position = "none")+
+  labs(title="NA Counts of Train Data",
+       subtitle = "With at least 1 NA")+
+  ylab("NA Count")+
+  xlab("Train Variables")+
+  ylim(0,1500)
+```
+
+## Known NA Values
+
+Most of the variables that contain NA values are variables where the NA value is known. For example, the Alley variable replaces the level of "none" with NA and the Basement Quality variable replaces the level of "no basement" with NA.   
+
+```{r known missing values, message=FALSE, warning=FALSE}
+naDF <- naDF %>% 
+  mutate(knownMissing=ifelse(variable %in% c("Alley","BsmtQual","BsmtCond","BsmtExposure","BsmtFinType1","BsmtFinType2","FireplaceQu","GarageType","GarageFinish","GarageQual","GarageCond","PoolQC","Fence","MiscFeature"),"Known","Unknown"))
+
+ggplot(naDF,aes(x=as.factor(knownMissing),fill=knownMissing))+
+  geom_bar()+
+  geom_text(stat="count",aes(label=..count..), vjust=-1)+
+  xlab("Known vs Unknown NA's")+
+  ylab("Count")+
+  labs(title="Count of Variables with Known vs Unknown NA values")+
+  guides(fill=guide_legend(title="Known vs Unknown"))+
+  ylim(0,15)
+
+```
+
+The fourteen variables that have known missing values are Alley, Basement Quality, Basement Condition, Basement Exposure, Basement Finish Type1, Basement Finish Type2, Fire Place Quality, Garage Type, Garage Finish, Garage Quality, Garage Condition, Pool Quality, Fence, and Miscellaneous. The appropriate values will all be added to the train data now to replace the known NA values. 
+
+```{r filling known missing train}
+train[is.na(train$Alley),"Alley"] <- "none"
+
+for(name in c("BsmtQual","BsmtCond","BsmtExposure","BsmtFinType1","BsmtFinType2")){
+  train[is.na(train[,name]),name] <- "none"
+}
+
+train[is.na(train$FireplaceQu),"FireplaceQu"] <- "none"
+
+for(name in c("GarageType","GarageFinish","GarageQual","GarageCond")){
+  train[is.na(train[,name]),name] <- "none"
+}
+
+train[is.na(train$PoolQC),"PoolQC"] <- "none"
+
+train[is.na(train$Fence),"Fence"] <- "none"
+
+train[is.na(train$MiscFeature),"MiscFeature"] <- "none"
+
+```
+
+The same will be done for the test set.
+
+```{r filling known missing test}
+test[is.na(test$Alley),"Alley"] <- "none"
+
+for(name in c("BsmtQual","BsmtCond","BsmtExposure","BsmtFinType1","BsmtFinType2")){
+  test[is.na(test[,name]),name] <- "none"
+}
+
+test[is.na(test$FireplaceQu),"FireplaceQu"] <- "none"
+
+for(name in c("GarageType","GarageFinish","GarageQual","GarageCond")){
+  test[is.na(test[,name]),name] <- "none"
+}
+
+test[is.na(test$PoolQC),"PoolQC"] <- "none"
+
+test[is.na(test$Fence),"Fence"] <- "none"
+
+test[is.na(test$MiscFeature),"MiscFeature"] <- "none"
+```
+
+
+## Unknown NA Values
+
+Only five variables have remaining NA values. These values will be calulated in the feature engineering section.
+
+```{r na dataframe barchart}
+#creating na table
+naDF <- data.frame(sapply(train,function(x) sum(is.na(x))))
+names(naDF) <- "NA_Count"
+naDF$variable <- row.names(naDF)
+naDF <- naDF %>% 
+  select(variable,NA_Count) %>% 
+  filter(NA_Count>0)
+
+ggplot(naDF,aes(x=variable,y=NA_Count,fill=variable))+
+  geom_col(aes(x=reorder(variable,desc(NA_Count))))+
+  geom_text(aes(label=NA_Count), vjust=-1)+
+  xlab("Variable")+
+  ylab("NA Count")+
+  labs(title="Remaining NA Values")+
+  theme(legend.position = "none")+
+  ylim(0,275)
+  
+  
+```
+
+# Correlation Plots
+
+There exists strong correlations with some of the predictors with correlation values above .8. 
+
+```{r correlation of predictors}
+numericPredictors <- train[complete.cases(train),c(-1,-81)] %>% select_if(is.numeric) #1 = ID 81=SalesPrice
+
+correlations <- as.data.frame(as.table(cor(numericPredictors)))
+
+correlations <- correlations %>% filter(Freq!=1) %>% arrange(desc(Freq)) %>% rename(correlation=Freq)
+
+gt(correlations[seq(1,nrow(correlations),by=2),] %>% head(10))
+
+corrplot(cor(numericPredictors))
+```
+
+One of the predictors from each pair of correlated predictors with a correlation value above .8 will be dropped. Since garage year built has eighty-one NA values it will be dropped from that pair. The choice of which one to drop from the remaining three pairs will be based off which predictor has a lower correlation with the dependent variable of Sales Price. The predictors that will be dropped are total rooms above ground, first floor sf, and garage area.
+
+```{r which cor variables to drop}
+numericPredictors <- cbind(SalePrice=train[complete.cases(train),"SalePrice"],numericPredictors)
+
+correlationWithSalePrice <- as.data.frame(sapply(numericPredictors,function(x) cor(x,numericPredictors$SalePrice,use="complete.obs")))
+
+names(correlationWithSalePrice) <- "correlation"
+correlationWithSalePrice$predictor <- row.names(correlationWithSalePrice)
+
+correlationWithSalePrice %>% filter(predictor %in% c("GarageArea","GarageCars","X1stFlrSF","TotalBsmtSF","TotRmsAbvGrd","GrLivArea")) %>% arrange(desc(correlation))
+```
+
+# Data Analysis
+
+## ggplot Custom Functions
+
+ggplot function for continuous data:
+
+```{r ggplot for numeric, message=FALSE}
+
+#train with complete observations only
+
+numericggplot <- function(variable){
+  histo <- ggplot(train,aes(x=train[,variable]))+
+    geom_histogram()+
+    xlab(variable)+
+    theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=14,face="bold"))+
+    labs(title=variable)
+
+  
+  scattero <- ggplot(train,aes(x=train[,variable],y=SalePrice))+
+    geom_point()+
+    geom_smooth(method = "lm", se=FALSE, color="black")+
+    xlab(variable)+
+    ylab("SalePrice")+
+    theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=14,face="bold"))+
+    labs(title=variable)
+  
+grid.arrange(histo,scattero,ncol=2)
+}
+```
+
+ggplot function for discrete data:
+
+```{r discrete ggplot}
+discreteggplot <- function(name){
+    discretePlot <- ggplot(train,aes(x=as.factor(train[,name])))+
+    geom_bar()+xlab(name)
+
+discreteBox <- ggplot(train,aes(x=as.factor(train[,name]),y=SalePrice))+
+    geom_boxplot()+xlab(name)
+  
+grid.arrange(discretePlot,discreteBox,ncol=2)
+}
+```
+
+
+## Dependent Variable
+
+The dependent variable we are trying to predict is SalePrice. __SalePrice__ represents the prices of houses in Ames, Iowa. It exists in the train data set, but not in the test data set. It is skewed to the right with some very high trailing values. 
+
+```{r SalesPrice,fig.height=5,fig.width=15, message=FALSE}
+
+salePriceHisto <- ggplot(train,aes(x=SalePrice))+
+  geom_histogram()+
+  labs(title="SalePrice")
+
+salePriceBox <- ggplot(train,aes(x=SalePrice))+
+  geom_boxplot()+
+  labs(title="SalePrice")
+
+grid.arrange(salePriceHisto,salePriceBox,ncol=2)
+```
+
+By applying the log transformation the sale price becomes normally distributed.
+
+```{r sale price transformed,fig.height=5,fig.width=15, message=FALSE, warning=FALSE}
+salePriceHistoLog <- ggplot(train,aes(x=log(SalePrice)))+
+  geom_histogram()+
+  labs(title="SalePrice")+
+  xlab("log(SalePrice)")
+
+salePriceBoxLog <- ggplot(train,aes(x=log(SalePrice)))+
+  geom_boxplot()+
+  labs(title="SalePrice")+
+  xlab("log(SalePrice)")
+
+grid.arrange(salePriceHistoLog,salePriceBoxLog,ncol=2)
+```
+
+
+## Numeric Predictors{.tabset .tabset-pills}
+
+### Lot Frontage and Area
+
+__LotFrontage:__ Linear feet of street connected to a property. There appears to be two outliers with lot frontage above 300 including observations 935 and 1299. Due to the high number of missing values more sophisticated methods of imputation will have to be used.
+
+```{r lotfrontage,fig.height=5,fig.width=15,message=FALSE, warning=FALSE}
+numericggplot("LotFrontage")
+
+kable(train %>% filter(LotFrontage>300))
+```
+
+__LotArea:__ Lot size in square feet. Contains only four values above 100,000 including observations 250, 314, 336, and 707.
+
+```{r lotarea,fig.height=5,fig.width=15, message=FALSE}
+numericggplot("LotArea")
+kable(train[train$LotArea>100000,])
+```
+
+$\nextTab$
+
+### Misc Value
+
+__MiscVal:__ Value of miscellaneous features. Most have a value of zero inferring no miscellaneous feature. Given that the value is not zero, the average miscellaneous value is 1221.
+
+```{r MiscVal,fig.height=5,fig.width=15, message=FALSE}
+numericggplot("MiscVal")
+miscValTable <- as.data.frame(table(train$MiscVal))
+names(miscValTable) <- c("value","frequency")
+kable(miscValTable)
+
+#average price of misc. value given not 0
+round(mean(train[!is.na(train$MiscVal) & train$MiscVal!=0,"MiscVal"]),1)
+```
+
+$\nextTab$
+
+### Year Built, Year Remodeled, Garage Year Built 
+
+__YearBuilt:__ Original construction date. The newer the house, the higher the house prices are. However, there are a couple houses built before 1900 that are very expensize. Investigating we can see that all four of these houses had a recent remodel. A predictor will be added for houses that have a remodel year that is not equal to the year the house was built.
+
+```{r yearbuilt, fig.height=5,fig.width=15, message=FALSE}
+numericggplot("YearBuilt")
+kable(train[train$SalePrice>200000 & train$YearBuilt<1900 & !is.na(train$SalePrice),c("YearBuilt","YearRemodAdd","SalePrice")])
+```
+
+
+
+__YearRemodAdd:__ Remodel date (same as construction date if no remodeling or additions). Fifty-two percent of houses did not have a remodel.
+
+```{r yearRemodAdd, message=FALSE}
+numericggplot("YearRemodAdd")
+print(paste(round(sum(train$YearRemodAdd==train$YearBuilt)/nrow(train)*100,0),"% of houses did not have a remodel."))
+```
+
+__GarageYrBlt:__ Year garage was built. 75% of the time the garage was built when the house was built. There will be an added feature later on to depict whether or not the garage was added after the house was built. All eighty-one of the NA values in garage year built are due to the fact that the house does not have a garage.
+
+```{r GarageYrBlt, message=FALSE, warning=FALSE}
+numericggplot("GarageYrBlt")
+
+#percentage of time garage was built when house was built
+round(sum(train$GarageYrBlt==train$YearBuilt,na.rm=TRUE)/nrow(train),2)
+
+#comparing garage year built with house year built
+ggplot(train,aes(x=GarageYrBlt-YearBuilt))+
+  geom_histogram()+
+  xlab("Difference in Time")+
+  labs(title="Difference Between Year House was Built and Year Garage was Built")
+
+table(train[is.na(train$GarageYrBlt),"GarageYrBlt"],train[is.na(train$GarageYrBlt),"GarageFinish"],exclude=FALSE)
+
+```
+
+$\nextTab$
+
+### Garage Cars and Area
+
+__GarageCars:__ Size of garage in car capacity.
+
+```{r garage area and cars, message=FALSE}
+discreteggplot("GarageCars")
+```
+
+__GarageArea:__ Size of garage in square feet.
+
+There exists a strong correlation between garage cars and garage area which makes sense. One of the predictors will likely be dropped later on.
+
+```{r garage area, warning=FALSE, message=FALSE}
+numericggplot("GarageArea")
+
+ggplot(train,aes(x=as.factor(GarageCars),y=GarageArea))+
+  geom_boxplot()+
+  xlab("Number of Cars in Garage")+
+  labs(title="Garage Area vs Garage Cars",
+       subtitle=paste("Correlation:",round(cor(train$GarageCars,train$GarageArea),2)))
+```
+
+
+
+$\nextTab$
+
+### MasVnrArea and MasVnrType
+
+__MasVnrArea:__ Masonry veneer area in square feet. Most of the values are zero.
+
+```{r MasVnrArea, message=FALSE, warning=FALSE}
+numericggplot("MasVnrArea")
+```
+
+__MasVnrType:__ Masonry veneer type. There are two observations that have a masonry vaneer type listed, but have a masonry veneer area of zero. There are also five cases where the Masonry Vaneer Type is none but the Masonry Vaneer Area is not zero. These will be addressed in feature engineering section by replacing these values with their median.
+
+```{r masVnrType}
+discreteggplot("MasVnrType")
+
+kable(train %>% filter(MasVnrArea==0 & !MasVnrType=="None") %>% select(Id,MasVnrArea,MasVnrType))
+
+train[complete.cases(train$MasVnrType),] %>% group_by(MasVnrType) %>% summarize(medianMasVnrArea=median(MasVnrArea,na.rm=TRUE))
+
+kable(train %>% filter(MasVnrArea!=0 & MasVnrType=="None") %>% select(Id,MasVnrArea,MasVnrType))
+```
+
+
+$\nextTab$
+
+### Basement Area Predictors
+
+__BsmtFinSF1:__ Type 1 finish square feet. Observation 1299 is an outlier with the basement type1 square feet being above 3000.
+
+```{r Bsmtfinsf1, message=FALSE}
+numericggplot("BsmtFinSF1")
+
+kable(train %>% filter(BsmtFinSF1>3000) %>% select(Id,BsmtFinSF1,BsmtFinSF2,BsmtUnfSF,TotalBsmtSF))
+
+```
+
+__BsmtFinSF2:__ Type 2 finished square feet.
+
+```{r bsmtfinsf2, message=FALSE}
+numericggplot("BsmtFinSF2")
+```
+
+__BsmtUnfSF:__ Unfinished square feet of basement area.
+
+```{r bsmt unf sf, message=FALSE}
+numericggplot("BsmtUnfSF")
+```
+
+__TotalBsmtSF:__ Total square feet of basement area. Is the same as the sum of finished square feet 1, finished square feet 2, and unfinished square feet. There is one outlier with a total basement square feet above 6000 which is observation 1299. However, the sum of finished square feet 1, finished square feet 2, and unfinished square feet is equal to the total sum of square feet basement area for each observation meaning no typo errors. 
+
+```{r total bsmt sf, message=FALSE}
+numericggplot("TotalBsmtSF")
+
+sum(train$TotalBsmtSF!=train$BsmtFinSF1+train$BsmtFinSF2+train$BsmtUnfSF)
+```
+
+
+
+$\nextTab$
+
+### Upstairs SF Area
+
+__X1stFlrSF:__ First Floor square feet.
+
+```{r x1stflrsf, message=FALSE}
+numericggplot("X1stFlrSF")
+```
+
+__X2ndFlrSF:__ Second floor square feet.
+
+```{r x2ndflrsf, message=FALSE}
+numericggplot("X2ndFlrSF")
+```
+
+__LowQualFinSF:__ Low quality finished square feet (all floors). Only twenty-six houses in the train data set have low quality finished square feet.
+
+```{r lowqualfinsf, message=FALSE}
+numericggplot("LowQualFinSF")
+
+train %>% filter(LowQualFinSF>0) %>% count()
+```
+
+__GrLivArea:__ Above grade (ground) living area square feet.
+
+First floor square feet + second floor square feet + low quality square feet = above ground living area for each observation. Observation 1299 comes up again as an outlier, will likely be dropped in feature engineering stage.
+
+```{r grlivarea, message=FALSE}
+numericggplot("GrLivArea")
+
+sum(train$X1stFlrSF+train$X2ndFlrSF+train$LowQualFinSF!=train$GrLivArea)/nrow(train)
+
+kable(train[train$GrLivArea>5000,c("Id","SalePrice","GrLivArea","LowQualFinSF","X2ndFlrSF","X1stFlrSF")])
+```
+
+
+$\nextTab$
+
+### Number of Bathrooms
+
+__BsmtFullBath:__ Basement full bathrooms. Only one house has three full bathrooms in the basement. Although it appears unlikely for a basement of that size to have three full bathrooms, it is not entirely impossible. We can analyze this from the box-plot where a basement of a similar size has two full basement bathrooms.
+
+```{r bsmtfullbath, message=FALSE}
+discreteggplot("BsmtFullBath")
+
+ggplot(train,aes(x=as.factor(BsmtFullBath),y=TotalBsmtSF))+
+  geom_boxplot()+
+  xlab("Number of Full Basement Bathrooms")+
+  labs(title="Total Basement sq.ft vs Number of Basement Full Bathrooms")
+
+```
+
+__BsmtHalfBath:__ Basement half bathrooms.
+
+```{r bsmthalfbath, message=FALSE}
+discreteggplot("BsmtHalfBath")
+```
+
+__FullBath:__ Full bathrooms above grade.
+
+```{r fullbath}
+discreteggplot("FullBath")
+```
+
+__HalfBath:__ Half baths above grade.
+
+```{r halfbath}
+discreteggplot("HalfBath")
+```
+
+
+
+There is no variable for the total bathrooms in a house. This will be added later on in the feature engineering section.
+
+```{r totalbathrooms, message=FALSE}
+train %>% 
+  mutate(totalBathrooms=BsmtFullBath+BsmtHalfBath+HalfBath+FullBath,na.rm=TRUE) %>% 
+  ggplot(.,aes(x=as.factor(totalBathrooms)))+
+  geom_bar()+
+  xlab("Total Bathooms")+
+  ylab("Count of Bathrooms")+
+  labs(title="Total Bathrooms")
+```
+
+
+$\nextTab$
+
+### Bedrooms, Kitchens, and Total Rooms
+
+__BedroomAbvGr:__ Bedrooms above ground (does NOT include basement bedrooms).
+
+```{r bedroomAbvGr, message=FALSE}
+discreteggplot("BedroomAbvGr")
+```
+
+__KitchenAbvGr:__ Kitchens above ground.
+
+```{r kitchensAbvGr}
+discreteggplot("KitchenAbvGr")
+```
+
+__TotRmsAbvGrd:__ Total rooms above ground (does not include bathrooms).
+
+```{r TotRmsAbvGr}
+discreteggplot("TotRmsAbvGrd")
+```
+
+There will be a feature added later on for rooms that are neither kitchen or bedrooms.
+
+```{r otherRooms}
+train %>% mutate(otherRooms=TotRmsAbvGrd-BedroomAbvGr-KitchenAbvGr) %>% 
+  ggplot(.,aes(x=otherRooms))+
+  geom_bar()+xlab("Other Rooms")
+```
+
+
+$\nextTab$
+
+### Fireplaces
+
+__Fireplaces:__ Number of fireplaces. Nearly all houses have either one or two fireplaces.
+
+```{r fireplaces}
+discreteggplot("Fireplaces")
+```
+
+$\nextTab$
+
+### Porch Variables
+
+__OpenPorchSF:__ Open porch area in square feet.
+
+```{r porch square feet, message=FALSE}
+numericggplot("OpenPorchSF")
+```
+
+__EnclosedPorch:__ Enclosed porch area in square feet.
+
+```{r enclosedPorch, message=FALSE, warning=FALSE}
+numericggplot("EnclosedPorch")
+```
+
+__X3SsnPorch:__ Three season porch area in square feet.
+
+```{r x3ssnPorch, message=FALSE, warning=FALSE}
+numericggplot("X3SsnPorch")
+```
+
+__ScreenPorch:__ Screen porch area in square feet.
+
+```{r screenPorch, message=FALSE, warning=FALSE}
+numericggplot("ScreenPorch")
+```
+
+
+A predictor will be made later for whether or not a house has a porch. Most houses have a porch.
+
+```{r hasPorch}
+train %>% mutate(hasPorch=ifelse(ScreenPorch>0 | X3SsnPorch>0 | EnclosedPorch>0 | OpenPorchSF>0,1,0)) %>% 
+  ggplot(.,aes(x=as.factor(hasPorch)))+
+  geom_bar()+
+  xlab("Has a Porch")
+```
+
+Could also add a predictor for the total number of porch square feet.
+
+```{r total porch sf, warning=FALSE, message=FALSE}
+train %>% mutate(totalPorchArea=ScreenPorch+X3SsnPorch+EnclosedPorch+OpenPorchSF) %>% 
+  ggplot(.,aes(x=totalPorchArea))+
+  geom_histogram()
+```
+
+
+
+
+
+__WoodDeckSF:__ Wood deck area in square feet.
+
+```{r wooddeck sf, message=FALSE}
+numericggplot("WoodDeckSF")
+```
+
+$\nextTab$
+
+### Pool Area and Quality
+
+__PoolArea:__ Pool area in square feet. 
+
+```{r poolarea, message=FALSE}
+numericggplot("PoolArea")
+```
+
+__PoolQC:__ Quality of the pool.
+
+```{r poolqc}
+discreteggplot("PoolQC")
+```
+
+
+
+## Date/Time Predictors
+
+__MoSold:__ Month Sold (MM).
+
+Most houses seem to sell in the summer months, but the average house price per month sold seems pretty even.
+
+```{r Mo Sold Year Sold, message=FALSE, warning=FALSE}
+moSold1 <- ggplot(train,aes(x=as.character(MoSold)))+
+  geom_bar()+
+  scale_x_discrete(limits=seq(1,12))+
+  xlab("Months")
+
+moSold2 <- ggplot(train[!is.na(train$SalePrice),],aes(x=as.character(MoSold),y=SalePrice))+
+  geom_boxplot()+
+  scale_x_discrete(limits=seq(1,12))+
+  xlab("Months")
+
+grid.arrange(moSold1,moSold2,ncol=2)
+  
+```
+
+__YrSold:__ Year Sold (YYYY).
+
+From the previous charts we can see the end of the range of observations is in August 2010, which explains why 2010 has the least number of houses sold. There appears to be a gradual decrease in the median price of a house sold from 2006 to 2010. Both month sold and year sold will be converted to character predictors as there is no apparent ordering of sale price within them.
+
+```{r YrSold, message=FALSE}
+discreteggplot("YrSold")
+```
+
+
+## Ordered Predictors{.tabset .tabset-pills}
+
+### Overall Quality
+
+__OverallQual:__ Rates the overall material and finish of the house
+
+* 10 Very Excellent
+* 9	Excellent
+* 8	Very Good
+* 7	Good
+* 6	Above Average
+* 5	Average
+* 4	Below Average
+* 3	Fair
+* 2	Poor
+* 1	Very Poor
+
+There is a clear increase in the sale prices as the quality of the house increases.
+
+```{r overall quality, message=FALSE, warning=FALSE}
+overallqualBar <- ggplot(train,aes(x=OverallQual))+
+  geom_bar()+
+  scale_x_discrete(limits=seq(1,10))+
+  xlab("Overall Quality")
+
+overallqualBox <- ggplot(train,aes(x=as.factor(OverallQual),y=SalePrice))+
+  geom_boxplot()+
+  scale_x_discrete(limits=seq(1,10))+
+  xlab("Overall Quality")
+
+grid.arrange(overallqualBar,overallqualBox,ncol=2)
+
+```
+
+$\nextTab$
+
+### Overall Condition
+
+__OverallCond:__ Rates the overall condition of the house.
+
+* 10	Very Excellent
+* 9	Excellent
+* 8	Very Good
+* 7	Good
+* 6	Above Average	
+* 5	Average
+* 4	Below Average	
+* 3	Fair
+* 2	Poor
+* 1	Very Poor
+
+There is one outlier for the sale price when the overall condition is 2 and another outlier when the overall condition is 6. These observations are 379 and 692.
+
+```{r OverallCond, message=FALSE, warning=FALSE}
+ggplot(train,aes(x=as.character(OverallCond),y=SalePrice))+
+  geom_boxplot()+
+  scale_x_discrete(limits=seq(1,10))+
+  xlab("Overall Condition")
+
+kable(train[train$OverallCond==2 & train$SalePrice>350000 & !is.na(train$SalePrice),])
+
+kable(train[train$OverallCond==6 & train$SalePrice>600000 & !is.na(train$SalePrice),])
+
+```
+
+$\nextTab$
+
+### External Quality and Condition
+
+__ExterQual:__ Evaluates the quality of the material on the exterior. 
+
+* Ex	Excellent
+* Gd	Good
+* TA	Average/Typical
+* Fa	Fair
+* Po	Poor
+		
+
+```{r ExterQual, message=FALSE}
+discreteggplot("ExterQual")
+```
+
+__ExterCond:__ Evaluates the present condition of the material on the exterior. External quality and external condition will both be made into ordered predictors.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Average/Typical
+* Fa	Fair
+* Po	Poor
+
+```{r ExterCond}
+discreteggplot("ExterCond")
+```
+
+
+$\nextTab$
+
+### Basement Quality and Condition
+
+__BsmtQual:__ Evaluates the height of the basement.
+
+* Ex	Excellent (100+ inches)	
+* Gd	Good (90-99 inches)
+* TA	Typical (80-89 inches)
+* Fa	Fair (70-79 inches)
+* Po	Poor (<70 inches
+* NA	No Basement
+		
+
+```{r bsmtqual and bsmt cond, message=FALSE}
+discreteggplot("BsmtQual")
+```
+
+__BsmtCond:__ Evaluates the general condition of the basement. Both basement quality and basement condition will be made into ordered predictors.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Typical - slight dampness allowed
+* Fa	Fair - dampness or some cracking or settling
+* Po	Poor - Severe cracking, settling, or wetness
+* NA	No Basement
+
+```{r bsmtCond}
+discreteggplot("BsmtCond")
+```
+
+
+$\nextTab$
+
+### Kitchen Quality
+
+__KitchenQual:__ Kitchen quality. Will be made into ordered predictor.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Typical/Average
+* Fa	Fair
+* Po	Poor
+
+```{r KitchenQual, message=FALSE}
+discreteggplot("KitchenQual")
+```
+
+$\nextTab$
+
+### Fireplace Quality
+
+__FireplaceQu:__ Fireplace quality.
+
+* Ex	Excellent - Exceptional Masonry Fireplace
+* Gd	Good - Masonry Fireplace in main level
+* TA	Average - Prefabricated Fireplace in main living area or Masonry Fireplace in basement
+* Fa	Fair - Prefabricated Fireplace in basement
+* Po	Poor - Ben Franklin Stove
+* NA	No Fireplace
+
+```{r fireplace quality, message=FALSE}
+discreteggplot("FireplaceQu")
+```
+
+$\nextTab$
+
+### Garage Quality and Condition
+
+__GarageQual:__ Garage quality.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Typical/Average
+* Fa	Fair
+* Po	Poor
+* NA	No Garage
+
+```{r garagequality, message=FALSE}
+discreteggplot("GarageQual")
+```
+
+__GarageCond:__ Garage condition. Both garage quality and condition and will be made into ordered predictors. 
+
+* Ex	Excellent
+* Gd	Good
+* TA	Typical/Average
+* Fa	Fair
+* Po	Poor
+* NA	No Garage
+
+```{r GarageCond}
+discreteggplot("GarageCond")
+```
+
+
+$\nextTab$
+
+### Pool Quality
+
+__PoolQC:__ Pool quality.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Average/Typical
+* Fa	Fair
+* NA	No Pool
+
+```{r PoolQC, message=FALSE}
+discreteggplot("PoolQC")
+```
+
+$\nextTab$
+
+### Street
+
+__Street:__ Type of road access to property.
+
+* Grvl	Gravel	
+* Pave	Paved
+
+Can be made into ordered predictor with Paved>Gravel.
+
+```{r street2, message=FALSE}
+discreteggplot("Street")
+```
+
+$\nextTab$
+
+### LandSlope
+
+__LandSlope:__ Slope of property.
+
+* Gtl	Gentle slope
+* Mod	Moderate Slope	
+* Sev	Severe Slope
+
+Made into ordered with Gtl>Mod>Sev.
+
+```{r landslope2, message=FALSE}
+discreteggplot("LandSlope")
+```
+
+$\nextTab$
+
+### Heating quality, Central Air, Electrical
+
+__HeatingQC:__ Heating quality and condition.
+
+* Ex	Excellent
+* Gd	Good
+* TA	Average/Typical
+* Fa	Fair
+* Po	Poor
+
+
+
+Heating quality, central air, and electrical will all be changed into ordered.
+
+```{r heatingqc2, message=FALSE}
+discreteggplot("HeatingQC")
+```
+
+__CentralAir:__ Central air conditioning.
+
+* N	No
+* Y	Yes
+
+```{r central air}
+discreteggplot("CentralAir")
+```
+
+__Electrical:__ Electrical system. Since Electrical is dominated by level of Circuit breaker the NA value will be replaced with this value in the feature engineering section.
+
+* SBrkr	Standard Circuit Breakers & Romex
+* FuseA	Fuse Box over 60 AMP and all Romex wiring (Average)	
+* FuseF	60 AMP Fuse Box and mostly Romex wiring (Fair)
+* FuseP	60 AMP Fuse Box and mostly knob & tube wiring (poor)
+* Mix	Mixed
+
+```{r electrical}
+discreteggplot("Electrical")
+```
+
+
+$\nextTab$
+
+### Masonry Veneer Type
+
+__MasVnrType:__ Masonry veneer type.
+
+* BrkCmn	Brick Common
+* BrkFace	Brick Face
+* CBlock	Cinder Block
+* None	None
+* Stone	Stone
+
+Will be made into an ordered predictor with the sequential order of None<Brick Common<Brick Face<Stone. Cinder block is not in the data set so it will not be included, not sure where it would rank.
+
+```{r masvnrtype, message=FALSE}
+discreteggplot("MasVnrType")
+```
+
+$\nextTab$
+
+### Basement Exposure
+
+__BsmtExposure:__ Refers to walkout or garden level walls.
+
+* Gd	Good Exposure
+* Av	Average Exposure (split levels or foyers typically score average or above)	
+* Mn	Mimimum Exposure
+* No	No Exposure
+* NA	No Basement
+
+Can be made into ordered based on level of exposure.
+
+```{r bsmtexposure, message=FALSE}
+discreteggplot("BsmtExposure")
+```
+
+$\nextTab$
+
+### Garage Finish
+
+__GarageFinish:__ Interior finish of the garage.
+
+* Fin	Finished
+* RFn	Rough Finished	
+* Unf	Unfinished
+* NA	No Garage
+
+Garage finish will be made into ordered.
+
+```{r garagefinish 2, message=FALSE}
+discreteggplot("GarageFinish")
+```
+
+$\nextTab$
+
+### Paved Drive
+
+__PavedDrive:__ Paved driveway.
+
+* Y	Paved 
+* P	Partial Pavement
+* N	Dirt/Gravel
+
+```{r paved drive2, message=FALSE}
+discreteggplot("PavedDrive")
+```
+
+$\nextTab$
+
+### Fence
+
+__Fence:__ Fence quality.
+
+* GdPrv	Good Privacy
+* MnPrv	Minimum Privacy
+* GdWo	Good Wood
+* MnWw	Minimum Wood/Wire
+* NA	No Fence
+ 
+It appears having no fence translates to a higher sales price than having a fence. Will convert this predictor to ordered with having no fence having the highest median sales price.
+
+```{r fence2, message=FALSE}
+discreteggplot("Fence")
+```
+
+
+
+
+## Categorical Predictors{.tabset .tabset-pills}
+
+### MSSubClass
+
+__MSSubClass:__ Identifies the type of dwelling involved in the sale.	
+
+* 20	1-STORY 1946 & NEWER ALL STYLES
+* 30	1-STORY 1945 & OLDER
+* 40	1-STORY W/FINISHED ATTIC ALL AGES
+* 45	1-1/2 STORY - UNFINISHED ALL AGES
+* 50	1-1/2 STORY FINISHED ALL AGES
+* etc (11 more labels)
+
+The type of dwelling is currently a numeric predictor, it should be a factor.
+
+```{r mssubclass2, message=FALSE}
+discreteggplot("MSSubClass")
+```
+
+$\nextTab$
+
+### MSZoning
+
+__MSZoning:__ Identifies the general zoning classification of the sale.
+
+* A	  Agriculture
+* C	  Commercial
+* FV	Floating Village Residential
+* I	  Industrial
+* RH	Residential High Density
+* RL	Residential Low Density
+* RP	Residential Low Density Park 
+* RM	Residential Medium Density
+
+```{r mszoning2, message=FALSE}
+discreteggplot("MSZoning")
+```
+
+$\nextTab$
+
+### Alley
+
+Alley: Type of alley access to property.
+
+* Grvl	Gravel
+* Pave	Paved
+* NA 	  No alley access
+
+```{r alley2, message=FALSE}
+discreteggplot("Alley")
+```
+
+$\nextTab$
+
+### Lotshape
+
+__LotShape:__ General shape of property.
+
+* Reg	Regular	
+* IR1	Slightly irregular
+* IR2	Moderately Irregular
+* IR3	Irregular
+
+Could be an ordered predictor, box-plot doesn't support this claim though so leaving as character.
+
+```{r lotshape2, message=FALSE}
+discreteggplot("LotShape")
+```
+
+$\nextTab$
+
+### Land Contour
+
+__LandContour:__ Flatness of the property.
+
+* Lvl	Near Flat/Level	
+* Bnk	Banked - Quick and significant rise from street grade to building
+* HLS	Hillside - Significant slope from side to side
+* Low	Depression
+
+```{r landcontour2}
+discreteggplot("LandContour")
+```
+
+$\nextTab$
+
+### Lot Config.
+
+__LotConfig:__ Lot configuration.
+
+* Inside	Inside lot
+* Corner	Corner lot
+* CulDSac	Cul-de-sac
+* FR2	Frontage on 2 sides of property
+* FR3	Frontage on 3 sides of property
+
+```{r lotconfig2, message=FALSE}
+discreteggplot("LotConfig")
+```
+
+$\nextTab$
+
+### Neighborhood
+
+__Neighborhood:__ Physical locations within Ames city limits.
+
+* Blmngtn	Bloomington Heights
+* Blueste	Bluestem
+* BrDale	Briardale
+* BrkSide	Brookside
+* etc (21 other labels)
+
+There exists twenty-five possible labels for neighborhood.
+
+------------------------------------
+
+```{r neighborhood2, message=FALSE}
+discreteggplot("Neighborhood")
+
+train %>% group_by(Neighborhood) %>% summarize(count=n(),avgSalePrice=mean(SalePrice)) %>% arrange(desc(count))
+```
+
+$\nextTab$
+
+### Condition1 and Condition2
+
+__Condition1:__ Proximity to various conditions.
+
+* Artery	Adjacent to arterial street
+* Feedr	Adjacent to feeder street	
+* Norm	Normal	
+* RRNn	Within 200' of North-South Railroad
+* RRAn	Adjacent to North-South Railroad
+* PosN	Near positive off-site feature--park, greenbelt, etc.
+* PosA	Adjacent to postive off-site feature
+* RRNe	Within 200' of East-West Railroad
+* RRAe	Adjacent to East-West Railroad
+
+```{r condition1 and condition2 2, message=FALSE}
+discreteggplot("Condition1")
+table(train$Condition1)
+```
+
+__Condition2:__ Proximity to various conditions (if more than one is present).
+
+* Artery	Adjacent to arterial street
+* Feedr	Adjacent to feeder street	
+* Norm	Normal	
+* RRNn	Within 200' of North-South Railroad
+* RRAn	Adjacent to North-South Railroad
+* PosN	Near positive off-site feature--park, greenbelt, etc.
+* PosA	Adjacent to postive off-site feature
+* RRNe	Within 200' of East-West Railroad
+* RRAe	Adjacent to East-West Railroad
+
+87% of the houses have the same condition1 and condition2 value, one of the columns will likely be dropped.
+
+```{r condition2}
+discreteggplot("Condition2")
+
+round(sum((train$Condition1==train$Condition2)/nrow(train)),2)
+```
+
+$\nextTab$
+
+### Building Type and House Style
+
+__BldgType:__ Type of dwelling.
+
+* 1Fam	Single-family Detached	
+* 2FmCon	Two-family Conversion; originally built as one-family dwelling
+* Duplx	Duplex
+* TwnhsE	Townhouse End Unit
+* TwnhsI	Townhouse Inside Unit
+
+```{r bldgtype, message=FALSE}
+discreteggplot("BldgType")
+```
+
+__HouseStyle:__ Style of dwelling.
+
+* 1Story	One story
+* 1.5Fin	One and one-half story: 2nd level finished
+* 1.5Unf	One and one-half story: 2nd level unfinished
+* 2Story	Two story
+* 2.5Fin	Two and one-half story: 2nd level finished
+* 2.5Unf	Two and one-half story: 2nd level unfinished
+* SFoyer	Split Foyer
+* SLvl	   Split Level
+
+House Style has some rare labels that may require grouping.
+
+```{r housestyle}
+discreteggplot("HouseStyle")
+```
+
+
+$\nextTab$
+
+### Roof Style and Material
+
+__RoofStyle:__ Type of roof.
+
+* Flat	Flat
+* Gable	Gable
+* Gambrel	Gabrel (Barn)
+* Hip	Hip
+* Mansard	Mansard
+* Shed	Shed
+	
+```{r roof style, message=FALSE}
+discreteggplot("RoofStyle")
+```
+
+__RoofMatl:__ Roof material.
+
+* ClyTile	Clay or Tile
+* CompShg	Standard (Composite) Shingle
+* Membran	Membrane
+* Metal	Metal
+* Roll	Roll
+* Tar&Grv	Gravel & Tar
+* WdShake	Wood Shakes
+* WdShngl	Wood Shingles
+
+Roof material has four levels that only occur once. These levels will either need to be dropped or grouped.
+
+```{r roofmatl}
+discreteggplot("RoofMatl")
+
+table(train$RoofMatl)
+```
+
+
+
+$\nextTab$
+
+### Exterior1st and 2nd
+
+__Exterior1st:__ Exterior covering on house.
+
+* AsbShng	Asbestos Shingles
+* AsphShn	Asphalt Shingles
+* BrkComm	Brick Common
+* BrkFace	Brick Face
+* CBlock	Cinder Block
+* etc (12 other levels)
+
+```{r exterior1st, message=FALSE}
+exterior1stBar <- ggplot(train,aes(x=Exterior1st))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45))
+  
+
+exterior1stBox <- ggplot(train[!is.na(train$SalePrice),],aes(x=Exterior1st,y=SalePrice))+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 45))
+
+grid.arrange(exterior1stBar,exterior1stBox, ncol=2)
+```
+
+__Exterior2nd:__ Exterior covering on house (if more than one material).
+
+* AsbShng	Asbestos Shingles
+* AsphShn	Asphalt Shingles
+* BrkComm	Brick Common
+* BrkFace	Brick Face
+* CBlock	Cinder Block
+* etc (12 other levels)
+
+Most of the time exterior1st is the same as exterior2nd, one of the predictors will likely be dropped.
+
+```{r exterior 2nd}
+exterior2ndBar <- ggplot(train,aes(x=Exterior2nd))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45))
+  
+
+exterior2ndBox <- ggplot(train[!is.na(train$SalePrice),],aes(x=Exterior2nd,y=SalePrice))+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 45))
+
+grid.arrange(exterior2ndBar,exterior2ndBox, ncol=2)
+
+round(sum(train$Exterior1st==train$Exterior2nd)/nrow(train),2)
+```
+
+$\nextTab$
+
+### Foundation
+
+__Foundation:__ Type of foundation.
+
+* BrkTil	Brick & Tile
+* CBlock	Cinder Block
+* PConc	Poured Contrete	
+* Slab	Slab
+* Stone	Stone
+* Wood	Wood
+
+```{r foundation2, message=FALSE}
+discreteggplot("Foundation")
+```
+
+$\nextTab$
+
+### BsmtFinType 1 and 2
+
+__BsmtFinType1:__ Rating of basement finished area.
+
+* GLQ	Good Living Quarters
+* ALQ	Average Living Quarters
+* BLQ	Below Average Living Quarters	
+* Rec	Average Rec Room
+* LwQ	Low Quality
+* Unf	Unfinshed
+* NA	No Basement
+
+```{r bsmtfintype1, message=FALSE}
+discreteggplot("BsmtFinType1")
+```
+
+__BsmtFinType2:__ Rating of basement finished area (if multiple types).
+
+* GLQ	Good Living Quarters
+* ALQ	Average Living Quarters
+* BLQ	Below Average Living Quarters	
+* Rec	Average Rec Room
+* LwQ	Low Quality
+* Unf	Unfinished
+* NA	No Basement
+
+From the plots it is shown that the sale price did not increase as would be expected when moving from no basement to good living quarters. Because of this, these two predictors will remain character instead of being made into ordered. Almost all of basement finish type2 are of the unfinished class.
+
+```{r bsmtfintype2}
+discreteggplot("BsmtFinType2")
+```
+
+
+$\nextTab$
+
+### Heating
+
+__Heating:__ Type of heating.
+
+* Floor	Floor Furnace
+* GasA	Gas forced warm air furnace
+* GasW	Gas hot water or steam heat
+* Grav	Gravity furnace	
+* OthW	Hot water or steam heat other than gas
+* Wall	Wall furnace
+
+Nearly all houses have gas forced heating.
+
+```{r heating2, message=FALSE}
+discreteggplot("Heating")
+
+table(train$Heating)
+```
+
+$\nextTab$
+
+### Functional
+
+__Functional:__ Home functionality (Assume typical unless deductions are warranted).
+
+* Typ	Typical Functionality
+* Min1	Minor Deductions 1
+* Min2	Minor Deductions 2
+* Mod	Moderate Deductions
+* Maj1	Major Deductions 1
+* Maj2	Major Deductions 2
+* Sev	Severely Damaged
+* Sal	Salvage only
+
+Nearly all values are typical.
+
+```{r Functional 2, message=FALSE}
+discreteggplot("Functional")
+```
+
+$\nextTab$
+
+### Garage Type
+
+__GarageType:__ Garage location.
+
+* 2Types	More than one type of garage
+* Attchd	Attached to home
+* Basment	Basement Garage
+* BuiltIn	Built-In (Garage part of house - typically has room above garage)
+* CarPort	Car Port
+* Detchd	Detached from home
+* NA	    No Garage
+
+```{r garagetype2, message=FALSE}
+discreteggplot("GarageType")
+```
+
+$\nextTab$
+
+### Misc Feature
+
+__MiscFeature:__ Miscellaneous feature not covered in other categories.
+
+* Elev	Elevator
+* Gar2	2nd Garage (if not described in garage section)
+* Othr	Other
+* Shed	Shed (over 100 SF)
+* TenC	Tennis Court
+* NA	  None
+
+96% of houses do not have a miscellaneous feature.
+
+```{r miscfeature2, message=FALSE}
+discreteggplot("MiscFeature")
+
+round(sum(train$MiscFeature=="none")/nrow(train),2)
+```
+
+$\nextTab$
+
+### Sale Type and Condition
+
+__SaleType:__ Type of sale.
+
+* WD 	    Warranty Deed - Conventional
+* CWD	    Warranty Deed - Cash
+* VWD	    Warranty Deed - VA Loan
+* New	    Home just constructed and sold
+* COD	    Court Officer Deed/Estate
+* Con	    Contract 15% Down payment regular terms
+* ConLw	  Contract Low Down payment and low interest
+* ConLI	  Contract Low Interest
+* ConLD	  Contract Low Down
+* Oth	    Other
+
+```{r saletype, message=FALSE}
+discreteggplot("SaleType")
+```
+
+__SaleCondition:__ Condition of sale.
+
+* Normal	Normal Sale
+* Abnorml	Abnormal Sale -  trade, foreclosure, short sale
+* AdjLand	Adjoining Land Purchase
+* Alloca	Allocation - two linked properties with separate deeds, typically condo with a garage unit	
+* Family	Sale between family members
+* Partial	Home was not completed when last assessed (associated with New Homes)
+
+Both are dominated by one label and have a number of rare labels.
+
+```{r sale condition}
+discreteggplot("SaleCondition")
+```
+
+
+# Test Data Analysis
+
+__MasVnrArea and MasVnrType:__
+
+In kaggle competitions we have access to the test set so this allows us to take a peak for any possible observations with data entry errors or weird values. The masonry veneer area and type exhibit the same problems that occurred in the train set.
+
+```{r}
+test %>% filter(MasVnrArea!=0 & MasVnrType=="None") %>% select(Id,MasVnrArea,MasVnrType)
+test %>% filter(MasVnrArea==0 & MasVnrType!="None") %>% select(Id,MasVnrArea,MasVnrType)
+```
+
+# Baseline Model
+
+Now that the data analysis portion is over a random forest model will be run to develop a baseline score in which we hope to beat. 
+
+## Train Control for RF
+
+```{r train control}
+custom_summary = function(data, lev = NULL, model = NULL) {
+library(Metrics)
+out = rmsle(data[, "obs"], data[, "pred"])
+names(out) = c("rmsle")
+out
+}
+ctrl <- trainControl(method="cv",
+                     number=10,
+                     summaryFunction = custom_summary,
+                     allowParallel = TRUE)
+```
+
+Removing near zero variances.
+
+```{r}
+noVariance <- nearZeroVar(train)
+noNearZeroVar <- train[,-noVariance]
+```
+
+
+## Random Forest Model
+
+```{r rf baseline, warning=FALSE,eval=FALSE}
+set.seed(123)
+rfBase <- train(SalePrice~.,data=noNearZeroVar[complete.cases(train),-1],
+                trControl=ctrl,
+                metric="rmsle",
+                maximize=FALSE,
+                tuneGrid=expand.grid(mtry=seq(20,40,by=5)))
+
+saveRDS(rfBase,"rfBase.rds")
+```
+
+
+```{r load rfBaseline}
+rfBase <- readRDS("rfBase.rds")
+min(rfBase$results$rmsle)
+```
+
+Variable Importance
+
+From the baseline random forest model we are also able to gather the variable importance in predicting sales price. The top 10 listed important variables are overall quality, above ground living area, garage cars, external quality, total basement square feet, kitchen quality, 1st floor square feet, garage area, year built, and basement quality.
+
+```{r variable importance, message=FALSE, warning=FALSE}
+varImp(rfBase)
+```
+
+
+# Feature Engineering
+
+Takeaways from the data analysis section:
+
+- Corrections to MasVnrArea and MasVnrType are needed.
+
+- Imputation is still required for missing values.
+
+- There are some predictors we can add to our model.
+
+- There are near zero variance predictors in the data set, meaning they supply little information.
+
+- Highly correlated predictors exist in the data set.
+
+- There are many predictors that can be represented as ordered predictors.
+
+- Some variables have too many levels which can lead to over fitting.
+
+- There was one outlier value that kept appearing.
+
+Mode function:
+
+```{r mode function}
+mode <- function(x){
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+```
+
+__MasVnrArea and MasVnrType:__
+
+Masonry veneer area and type have errors such as an area of zero when a type is listed or an area above zero when listed as none. These issues will fixed by taking the median values for the masonry veneer area and the second most common masonry veneer type which is brick face for masonry veneer type.
+
+```{r}
+train[train$Id==689,"MasVnrArea"] <- median(train[train$MasVnrType=="BrkFace" & !is.na(train$MasVnrArea),"MasVnrArea"])
+
+train[train$Id==1242,"MasVnrArea"] <- median(train[train$MasVnrType=="Stone" & !is.na(train$MasVnrArea),"MasVnrArea"])
+
+train[train$Id%in%c(774,1231),"MasVnrArea"] <- 0
+
+train[train$Id %in% c(625,1301,1335) & train$MasVnrType=="None","MasVnrType"] <- "BrkFace"
+```
+
+Applying the same to the test set.
+
+```{r}
+test[test$Id==2453,"MasVnrArea"] <- 0
+test[test$Id==1670,"MasVnrType"] <- "BrkFace"
+test[test$Id==2320,"MasVnrArea"] <- median(train[train$MasVnrType=="BrkFace" & !is.na(train$MasVnrArea),"MasVnrArea"])
+```
+
+__Imputation:__
+
+For Electrical and MasVnrType mode imputation will be used because there are only a total on nine NA values between the two. Any changes applied to the train data set should also be applied to the test.
+
+```{r imputation masVnrArea and masVnrType}
+test[is.na(test$Electrical),"Electrical"] <- mode(train[!is.na(train$Electrical),"Electrical"])
+
+test[is.na(test$MasVnrType),"MasVnrType"] <- mode(train[!is.na(train$MasVnrType),"MasVnrType"])
+```
+
+
+```{r electrical imputation}
+train[is.na(train$Electrical),"Electrical"] <- mode(train[!is.na(train$Electrical),"Electrical"])
+
+train[is.na(train$MasVnrType),"MasVnrType"] <- mode(train[!is.na(train$MasVnrType),"MasVnrType"])
+```
+
+
+For MasVnrArea there are only eight NA values, median imputation will be used.
+
+```{r imputation for masvnrarea, message=FALSE, warning=FALSE}
+test[is.na(test$MasVnrArea),"MasVnrArea"] <- 
+  median(train[!is.na(train$MasVnrArea),"MasVnrArea"])
+
+train[is.na(train$MasVnrArea),"MasVnrArea"] <- median(train[!is.na(train$MasVnrArea),"MasVnrArea"])
+```
+
+KNN imputation will be used for lot frontage. Since KNN imputation center and scales the data the reverse of the operations will be applied to change lot frontage back to its original form.
+
+```{r knn imputation}
+library(RANN)
+lotFrontageMean <- mean(train[!is.na(train$LotFrontage),"LotFrontage"])
+sdLotFrontage <- sd(train[!is.na(train$LotFrontage),"LotFrontage"])
+
+imputeMissing <- preProcess(train[,c(-1,-81)],"knnImpute") # 1=ID, 81=SalePrice
+imputedMissingTrain <- predict(imputeMissing,train)
+
+# unstandardizing the data
+train$LotFrontage <- (imputedMissingTrain$LotFrontage*sdLotFrontage)+lotFrontageMean
+```
+
+Same imputation method will be used for the test set.
+
+```{r imputation for the test set}
+imputedMissingTest <- predict(imputeMissing,test)
+# unstandardizing the data
+test$LotFrontage <- (imputedMissingTest$LotFrontage*sdLotFrontage)+lotFrontageMean
+```
+
+
+Garage year built has intrinsic missing values which represent not having a garage. Since it is highly correlated with the year the house was built, imputation will not be needed as it will be dropped later on. 
+
+__Test NAs:__
+
+There are remaining NA values in the test set. Looking at the basement and garage NA's it appears those observations did not have a basement or garage so the NA values are replaced with zeros. For the remaining NA values mode imputation is used. Again we are skipping the year the garage was built because that variable will be dropped.
+
+```{r test nas}
+testNAs <- as.data.frame(sapply(test,function(x) sum(is.na(x))))
+names(testNAs) <- "NA_Count"
+testNAs$variable <- row.names(testNAs)
+testNAs %>% arrange(desc(NA_Count)) %>% filter(NA_Count>0)
+
+test[,grepl("Bsmt",names(test))] %>% filter(is.na(BsmtFullBath))
+
+test[test$Id==2121,c("BsmtFinSF1","BsmtFinSF2","BsmtUnfSF","TotalBsmtSF","BsmtFullBath","BsmtHalfBath")] <- 0
+test[test$Id==2189,c("BsmtFullBath","BsmtHalfBath")] <- 0
+
+test[,grepl("Garage",names(test))] %>% filter(is.na(GarageArea))
+test[test$Id==2577,c("GarageCars","GarageArea")] <- 0
+
+test[is.na(test$MSZoning),"MSZoning"] <- mode(train$MSZoning)
+test[is.na(test$Utilities),"Utilities"] <- mode(train$Utilities)
+test[is.na(test$Functional),"Functional"] <- mode(train$Functional)
+test[is.na(test$Exterior1st),"Exterior1st"] <- mode(train$Exterior1st)
+test[is.na(test$Exterior2nd),"Exterior2nd"] <- mode(train$Exterior2nd)
+test[is.na(test$KitchenQual),"KitchenQual"] <- mode(train$KitchenQual)
+test[is.na(test$SaleType),"SaleType"] <- mode(train$SaleType)
+```
+
+__Adding Predictors:__
+
+The predictors added to our data will be whether or not a house had a garage built after the house was built, total rooms that are neither bathrooms or kitchens, total number of bathrooms, whether a house has a porch, total porch sf, and whether or not a house had a remodel.
+
+```{r adding new predictors}
+train <- train %>% 
+  mutate(newGarage=ifelse(!is.na(GarageYrBlt) & YearBuilt!=GarageYrBlt ,1,0),
+         otherRooms=TotRmsAbvGrd-FullBath-HalfBath,
+         totalBathRoom=FullBath+HalfBath+BsmtFullBath+BsmtHalfBath,
+         hasPorch=ifelse(WoodDeckSF+OpenPorchSF+EnclosedPorch+X3SsnPorch>0,1,0),
+         totalPorchSF=WoodDeckSF+OpenPorchSF+EnclosedPorch+X3SsnPorch,
+         hasRemodel=ifelse(YearBuilt!=YearRemodAdd,1,0))
+
+test <- test %>% 
+  mutate(newGarage=ifelse(!is.na(GarageYrBlt) & YearBuilt!=GarageYrBlt ,1,0),
+         otherRooms=TotRmsAbvGrd-FullBath-HalfBath,
+         totalBathRoom=FullBath+HalfBath+BsmtFullBath+BsmtHalfBath,
+         hasPorch=ifelse(WoodDeckSF+OpenPorchSF+EnclosedPorch+X3SsnPorch>0,1,0),
+         totalPorchSF=WoodDeckSF+OpenPorchSF+EnclosedPorch+X3SsnPorch,
+         hasRemodel=ifelse(YearBuilt!=YearRemodAdd,1,0))
+```
+
+When looking at the year the house was built compared to the sales price it appears before a certain period the age of the house does not matter. This point is found using a mars model. Houses built before 1971 have less affect for a one year increase in the age of the house on sale price compared to a house built after 1971. A newly created variable of 'OldHouse' will be used to address this.
+
+```{r creating old house variable, message=FALSE, warning=FALSE}
+# Building mars model to find hinge point
+yearBuiltBinned <- earth(SalePrice~YearBuilt,train[,-1],nprune = 2)
+#building data frame of predicted values from the mars model
+predictedValues <- data.frame(YearBuilt=train["YearBuilt"],predict(yearBuiltBinned,train))
+
+#plotting what it looks like with the hinge function
+predictedValues %>% 
+  ggplot(.,aes(YearBuilt,SalePrice))+
+  geom_smooth(color="red",size=3)+
+  geom_point(data=train,aes(x=YearBuilt,y=SalePrice))+
+  geom_point()+
+  annotate("segment",x=1971,xend=1971,y=0,yend=350000,color="red")+
+  labs(title="Hinge at 1971")
+
+#adding the binary variable
+train$OldHouse <- ifelse(train$YearBuilt<=1971,1,0)
+test$OldHouse <- ifelse(test$YearBuilt<=1971,1,0)
+```
+
+
+
+__Near-Zero Variance Predictors:__
+
+Near-zero variance predictors enter extra variance into our model while supplying little information. The predictors in this first iteration of feature engineering that will be dropped will be chosen very conservatively. Only the predictors of Street, Utilities, Heating, and PoolQC will be dropped.
+
+```{r dropping near zero var}
+noVariance <- nearZeroVar(train,freqCut = 40,uniqueCut = .5,saveMetrics = TRUE)
+noVariance %>% filter(nzv==TRUE)
+
+train <- train %>% select(-Street,-Utilities,-Heating,-PoolQC)
+test <- test %>% select(-Street,-Utilities,-Heating,-PoolQC)
+```
+
+
+__Correlated Predictors:__
+
+The highly correlated numeric predictors we found that will be dropped are total rooms above ground, first floor sf, garage area, the year the garage was built, and WoodDeckSF.
+
+```{r removing highly correlated predictors}
+numericPreds <- train[,c(-1,-77)] %>% select_if(is.numeric)
+correlations <- as.data.frame(as.table(cor(numericPreds,use="complete.obs"))) %>% filter(Freq!=1) %>% arrange(desc(Freq))
+correlations <- correlations[seq(1,nrow(correlations),by=2),]
+head(correlations)
+
+
+train <- train %>% select(-TotRmsAbvGrd,-X1stFlrSF,-GarageArea,-GarageYrBlt,-WoodDeckSF)
+test <- test %>% select(-TotRmsAbvGrd,-X1stFlrSF,-GarageArea,-GarageYrBlt,-WoodDeckSF)
+```
+
+From the data analysis there are some categorical predictors that have nearly all the same labels. These variables will be dropped now.
+
+```{r dropping correlated categorical variables}
+train <- train %>% select(-Condition2,-Exterior2nd,-BsmtFinType2)
+test <- test %>% select(-Condition2,-Exterior2nd,-BsmtFinType2)
+```
+
+__Ordered Predictors:__
+
+Many of the predictors can be represented as ordered predictors. This will lower the amount of factor levels which will improve computation time and can lower the chance of over fitting.
+
+
+```{r train to ordered, message=FALSE, warning=FALSE}
+noNone <- c('Po' = 0, 'Fa' = 1, 'TA' = 2, 'Gd' = 3, 'Ex' = 4)
+withNone <-c('none' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+
+train$ExterQual<-as.integer(revalue(train$ExterQual, noNone))
+train$ExterCond<-as.integer(revalue(train$ExterCond, noNone))
+train$KitchenQual <- as.integer(revalue(train$KitchenQual,noNone))
+train$HeatingQC <- as.integer(revalue(train$HeatingQC,noNone))
+
+train$BsmtQual <- as.integer(revalue(train$BsmtQual,withNone))
+train$BsmtCond <- as.integer(revalue(train$BsmtCond,withNone))
+train$FireplaceQu <- as.integer(revalue(train$FireplaceQu,withNone))
+train$GarageQual <- as.integer(revalue(train$GarageQual,withNone))
+train$GarageCond <- as.integer(revalue(train$GarageCond,withNone))
+```
+
+```{r test to ordered, message=FALSE, warning=FALSE}
+test$ExterQual<-as.integer(revalue(test$ExterQual, noNone))
+test$ExterCond<-as.integer(revalue(test$ExterCond, noNone))
+test$KitchenQual <- as.integer(revalue(test$KitchenQual,noNone))
+test$HeatingQC <- as.integer(revalue(test$HeatingQC,noNone))
+
+test$BsmtQual <- as.integer(revalue(test$BsmtQual,withNone))
+test$BsmtCond <- as.integer(revalue(test$BsmtCond,withNone))
+test$FireplaceQu <- as.integer(revalue(test$FireplaceQu,withNone))
+test$GarageQual <- as.integer(revalue(test$GarageQual,withNone))
+test$GarageCond <- as.integer(revalue(test$GarageCond,withNone))
+```
+
+```{r more to ordered train, message=FALSE, warning=FALSE}
+train$LandSlope <- as.integer(revalue(train$LandSlope,c("Gtl"=0,"Mod"=1,"Sev"=2)))
+train$CentralAir <- as.integer(revalue(train$CentralAir,c('N'=0,'Y'=1)))
+train$Electrical <- as.integer(revalue(train$Electrical,c('Mix'=0,'FuseP'=1,'FuseF'=2,'FuseA'=3,'SBrkr'=4)))
+train$MasVnrType <- as.integer(revalue(train$MasVnrType,c('None'=0,'BrkCmn'=1,'BrkFace'=2,'Stone'=3)))
+train$BsmtExposure <- as.integer(revalue(train$BsmtExposure,c('none'=0,'No'=1,'Mn'=2,'Av'=3,'Gd'=4)))
+train$GarageFinish <- as.integer(revalue(train$GarageFinish,c('none'=0,'Unf'=1,'RFn'=2,'Fin'=3)))
+train$PavedDrive <- as.integer(revalue(train$PavedDrive,c('N'=0,'P'=1,'Y'=2)))
+train$Fence <- as.integer(revalue(train$Fence,c('MnWw'=0,'GdWo'=1,'MnPrv'=2,'GdPrv'=3,'none'=4)))
+```
+
+```{r more to ordered test, message=FALSE, warning=FALSE}
+test$LandSlope <- as.integer(revalue(test$LandSlope,c("Gtl"=0,"Mod"=1,"Sev"=2)))
+test$CentralAir <- as.integer(revalue(test$CentralAir,c('N'=0,'Y'=1)))
+test$Electrical <- as.integer(revalue(test$Electrical,c('Mix'=0,'FuseP'=1,'FuseF'=2,'FuseA'=3,'SBrkr'=4)))
+test$MasVnrType <- as.integer(revalue(test$MasVnrType,c('None'=0,'BrkCmn'=1,'BrkFace'=2,'Stone'=3)))
+test$BsmtExposure <- as.integer(revalue(test$BsmtExposure,c('none'=0,'No'=1,'Mn'=2,'Av'=3,'Gd'=4)))
+test$GarageFinish <- as.integer(revalue(test$GarageFinish,c('none'=0,'Unf'=1,'RFn'=2,'Fin'=3)))
+test$PavedDrive <- as.integer(revalue(test$PavedDrive,c('N'=0,'P'=1,'Y'=2)))
+test$Fence <- as.integer(revalue(test$Fence,c('MnWw'=0,'GdWo'=1,'MnPrv'=2,'GdPrv'=3,'none'=4)))
+```
+
+__Grouping Rare Levels:__
+
+Any levels with less than fifteen occurrences in the train set will be grouped. Most of these will be done by replacing the value with the mode. In other cases the rare levels will be grouped with a level that is similar.
+
+```{r grouping rare levels train}
+train$MSSubClass <- as.character(train$MSSubClass)
+test$MSSubClass <- as.character(test$MSSubClass)
+
+train[train$MSSubClass %in% c("40","80"),"MSSubClass"] <- mode(train$MSSubClass)
+train[train$MSZoning %in% c("C (all)"),"MSZoning"] <- mode(train$MSZoning)
+train[train$LotShape %in% c("IR1","IR2","IR3"),"LotShape"] <- "irregular"
+train[train$LotConfig %in% c("FR2","FR3"),"LotConfig"] <- "twoPlus"
+train[train$Neighborhood %in% c("Blueste","NPkVill","Veenker"),"Neighborhood"] <- mode(train$Neighborhood)
+train[train$Condition1 %in% c("RRAe","RRAn","RRNe","RRNn"),"Condition1"] <- "nearRailroad"
+train[train$RoofStyle %in% c("Flat","Gambrel","Mansard","Shed"),"RoofStyle"] <- mode(train$RoofStyle)
+train[train$Foundation %in% c("Stone","Wood"),"Foundation"] <- mode(train$Foundation)
+train[train$Functional %in% c("Maj1","Maj2","Sev"),"Functional"] <- "other"
+train[train$GarageType %in% c("2Types","CarPort"),"GarageType"] <- "other"
+train[train$MiscFeature %in% c("Gar2","Othr","Shed","TenC"),"MiscFeature"] <- "hasMisc"
+train[train$SaleType %in% c("Con","ConLD","ConLI","ConLw","CWD","Oth"),"SaleType"] <- "other"
+train[train$SaleCondition %in% c("AdjLand","Alloca","Family"),"SaleCondition"] <- "other"
+```
+
+Same for the test.
+
+```{r grouping rare levels test}
+test[test$MSSubClass %in% c("40","80"),"MSSubClass"] <- mode(test$MSSubClass)
+test[test$MSZoning %in% c("C (all)"),"MSZoning"] <- mode(test$MSZoning)
+test[test$LotShape %in% c("IR1","IR2","IR3"),"LotShape"] <- "irregular"
+test[test$LotConfig %in% c("FR2","FR3"),"LotConfig"] <- "twoPlus"
+test[test$Neighborhood %in% c("Blueste","NPkVill","Veenker"),"Neighborhood"] <- mode(test$Neighborhood)
+test[test$Condition1 %in% c("RRAe","RRAn","RRNe","RRNn"),"Condition1"] <- "nearRailroad"
+test[test$RoofStyle %in% c("Flat","Gambrel","Mansard","Shed"),"RoofStyle"] <- mode(test$RoofStyle)
+test[test$Foundation %in% c("Stone","Wood"),"Foundation"] <- mode(test$Foundation)
+test[test$Functional %in% c("Maj1","Maj2","Sev"),"Functional"] <- "other"
+test[test$GarageType %in% c("2Types","CarPort"),"GarageType"] <- "other"
+test[test$MiscFeature %in% c("Gar2","Othr","Shed","TenC"),"MiscFeature"] <- "hasMisc"
+test[test$SaleType %in% c("Con","ConLD","ConLI","ConLw","CWD","Oth"),"SaleType"] <- "other"
+test[test$SaleCondition %in% c("AdjLand","Alloca","Family"),"SaleCondition"] <- "other"
+```
+
+Month sold should be a string instead of an integer because there is no clear ordering to it.
+
+```{r}
+train$MoSold <- as.character(train$MoSold)
+test$MoSold <- as.character(test$MoSold)
+```
+
+
+__Removing Outlier:__
+
+Observation 1299 of the train data kept appearing as an outlier so will be removed from the data set.
+
+```{r removing observation 1299}
+train <- train[-1299,]
+```
+
+
+# Modeling 2
+
+## Random Forest 
+
+Another random forest model will be run to see if the results beat our baseline model. The random forest model requires little to no pre-processing.
+
+## Random Forest Model
+
+
+```{r rf mod1, warning=FALSE,eval=FALSE}
+set.seed(12334)
+rfMod <- train(SalePrice~.,data=train[,-1],#1=Id
+                trControl=ctrl,
+                metric="rmsle",
+                maximize=FALSE,
+                tuneGrid=expand.grid(mtry=seq(20,40,by=5)))
+
+saveRDS(rfMod,"rfMod.rds")
+```
+
+The changes made created a slight improvement in our results.
+
+```{r load rfBase}
+rfMod <- readRDS("rfMod.rds")
+min(rfMod$results$rmsle)
+
+data.frame(model=c("baseline","rfModel"),rmsle=c(min(rfBase$results$rmsle),min(rfMod$results$rmsle)))
+```
+
+## Pre-Processing
+
+The following models will require us to make changes to the data such as standardization and dummy variables.
+
+__Standardization:__
+
+```{r standardizing data}
+makeStandard <- preProcess(train[,c(-1,-69)],method=c("center","scale"))#1=Id,69=SalePrice
+
+standardTrain <- predict(makeStandard,train)
+```
+
+__Dummy Variables:__
+
+After creating dummy variables and dropping id there are a total of 157 variables, with one of them being the dependent variable sales price.
+
+```{r making dummy}
+for(name in names(standardTrain)){
+  if(is.character(train[,name])){
+    train[,name] <- as.factor(train[,name])
+  }
+}
+makeDummy <- dummyVars(~.,standardTrain,fullRank = TRUE)
+trainClean <- predict(makeDummy,standardTrain)
+```
+
+
+
+
+## Other models
+
+__Lasso:__
+
+```{r lassoMod, message=FALSE, warning=FALSE, eval=FALSE}
+set.seed(342)
+lassoMod <- train(SalePrice~.,data=trainClean[,-1],#1=Id
+                  method="lasso",
+                  trControl=ctrl,
+                  tuneGrid=expand.grid(fraction=seq(.05,.8,by=.05)),
+                  metric="rmsle",
+                  maximize=FALSE)
+
+saveRDS(lassoMod,"lassoMod.rds")
+```
+
+
+```{r loading lassoMod1}
+lassoMod <- readRDS("lassoMod.rds")
+min(lassoMod$results$rmsle)
+```
+
+__Cubist Mod:__
+
+```{r cubistMod1, eval=FALSE}
+set.seed(1234)
+cubistMod <- train(SalePrice~.,data=trainClean[,-1],#1=Id
+                   method="cubist",
+                   trControl=ctrl,
+                   metric="rmsle",
+                   maximize=FALSE,
+                   tuneGrid=expand.grid(committees=seq(70,100,by=5),neighbors=c(7,8,9)))
+saveRDS(cubistMod,"cubistMod.rds")
+```
+
+```{r loading cubistmod1}
+cubistMod <- readRDS("cubistMod.rds")
+min(cubistMod$results$rmsle)
+```
+__Round 1 Results:__
+
+The cubist model performed the best of the three chosen models in the first round of modeling.
+
+```{r modeling results1}
+modelResults <- resamples(list(lasso=lassoMod,
+                               cubist=cubistMod,
+                               randomForest=rfMod))
+bwplot(modelResults,metric="rmsle")
+```
+
+-------------------------------------------------------------------------
+
+# Feature Engineering 2
+
+__Near Zero Variance:__
+
+When near zero variance predictors were removed before the parameters for what define a near zero variance predictor were very strict. Now the default parameters will be used. This drops an additional fifteen variables.
+
+```{r removing near zero variance predictors2}
+test <- test[,-nearZeroVar(train)]
+train <- train[,-nearZeroVar(train)]
+```
+
+
+```{r}
+train$OverallCondSQ <- train$OverallQual^2
+train$GrLivAreaSQ <- train$GrLivArea^2
+train$GarageCarsSQ <- train$GarageCars^2
+train$TotalBsmtSFSQ <- train$TotalBsmtSF^2
+train$ExterQualSQ <- train$ExterQual^2
+
+test$OverallCondSQ <- test$OverallQual^2
+test$GrLivAreaSQ <- test$GrLivArea^2
+test$GarageCarsSQ <- test$GarageCars^2
+test$TotalBsmtSFSQ <- test$TotalBsmtSF^2
+test$ExterQualSQ <- test$ExterQual^2
+```
+
+
+__Standardizing Data:__
+
+The numeric predictors will be standardized again.
+
+```{r second standardizing data}
+SalePrice <- train$SalePrice
+train <- train %>% select(-SalePrice)
+
+makeStandard <- preProcess(train,method=c("center","scale"))
+
+standardTrain <- predict(makeStandard,train)
+standardTest <- predict(makeStandard,test)
+```
+
+
+The train and test data set will be merged so that the dummy variables are the same across the two sets. The first level of each categorical variable will be set to the mode. This will be important for when we convert our variables into dummy variables the mode of each category will become the baseline. If we were to drop a dummy variable because of its rareness it will be the same as converting our rare variable into the mode level. 
+
+```{r changing first level of each category}
+combined <- rbind(standardTrain,standardTest)
+
+# making the mode the reference level and changing characters into factors
+for(name in names(combined)){
+  if(is.character(combined[,name])){
+    combined[,name] <- as.factor(combined[,name])
+    baseLine <- mode(combined[,name])
+    combined[,name] <- relevel(combined[,name],ref=as.character(baseLine))
+  }
+}
+
+makeDummy <- dummyVars(~.,data=combined,fullRank = TRUE)# id=1,saleprice=70
+combinedClean <- predict(makeDummy,combined)
+combinedClean <- as.data.frame(combinedClean)
+
+trainClean <- combinedClean[1:1459,]
+trainClean$SalePrice <- SalePrice
+
+testClean <- combinedClean[1460:2918,]
+```
+
+For some of the more rare labels it is possible for them to only exist in the train set or only exist in the test set. If they only exist in the train set it will lead to errors when trying to make predictions on the test set. If they exist only in the test set it will lead to unnecessary variance when building our models.
+
+```{r names not in the train set}
+# names not in the train set
+for(name in names(trainClean)){
+  if(sum(trainClean[,name])==0){
+    print(name)
+  }
+}
+
+trainClean <- trainClean %>%
+  select(-MSSubClass.150)
+
+testClean <- testClean %>% 
+  select(-MSSubClass.150)
+```
+
+```{r names not in the test set}
+# names not in the test set
+for(name in names(testClean)){
+  if(sum(testClean[,name])==0){
+    print(name)
+  }
+}
+
+trainClean <- trainClean %>% 
+  select(-HouseStyle.2.5Fin,-Exterior1st.ImStucc,-Exterior1st.Stone)
+
+testClean <- testClean %>% 
+  select(-HouseStyle.2.5Fin,-Exterior1st.ImStucc,-Exterior1st.Stone)
+```
+
+__High Correlations:__
+
+Correlated values above .9 will be removed from the train and test set.
+
+```{r correlation, eval=FALSE}
+correlatedColumns <- findCorrelation(cor(trainClean[,c(-1,-149)]),cutoff = .9)
+
+testClean <- testClean[,-correlatedColumns]
+trainClean <- trainClean[,-correlatedColumns]
+```
+
+
+```{r different ctrl}
+trainClean$SalePrice <- log(trainClean$SalePrice)
+
+ctrl <- trainControl(method="cv",number=10)
+```
+
+
+# Modeling 3
+
+__Lasso 2:__
+
+```{r lassoMod2, message=FALSE, warning=FALSE, eval=FALSE}
+set.seed(342)
+lassoMod2 <- train(SalePrice~.,data=trainClean[,-1],#1=Id
+                  method="lasso",
+                  trControl=ctrl,
+                  #metric="rmsle",
+                  tuneGrid=expand.grid(fraction=seq(.2,.7,by=.05)),
+                  maximize=FALSE)
+
+saveRDS(lassoMod2,"lassoMod2.rds")
+```
+
+
+```{r loading lassoMod2}
+lassoMod2 <- readRDS("lassoMod2.rds")
+min(lassoMod2$results$RMSE)
+```
+
+__Cubist Mod 2:__
+
+```{r cubistMod2, eval=FALSE}
+set.seed(1234)
+cubistMod2 <- train(SalePrice~.,data=trainClean[,-1],
+                   method="cubist",
+                   trControl=ctrl,
+                   #metric="rmsle",
+                   maximize=FALSE,
+                   tuneGrid=expand.grid(committees=seq(70,100,by=5),neighbors=c(7,8,9)))
+saveRDS(cubistMod2,"cubistMod2.rds")
+```
+
+```{r loading cubistmod2}
+cubistMod2 <- readRDS("cubistMod2.rds")
+min(cubistMod2$results$RMSE)
+```
+
+__Results:__
+
+Both the lasso and cubist performed slightly better after the second round of feature engineering.
+
+```{r results 2}
+modelResults2 <- resamples(list(lasso=lassoMod2,
+                               cubist=cubistMod2))
+bwplot(modelResults,metric="rmsle")
+bwplot(modelResults2,metric="RMSE")
+```
+
+
+# Final Submission
+
+The final model submitted was the cubist2 model. It achieved a rmsle of .12077 on the test set.
+
+```{r Making final submission, eval=FALSE}
+#exp to transform back to original units
+outputDF <- data.frame(ID=test$Id,SalePrice=exp(predict(cubistMod2,testClean)))
+
+write.csv(x = outputDF,file = "submission2.csv",row.names=FALSE)
+```

@@ -1,0 +1,889 @@
+---
+title: "Kaggle Titanic"
+output:
+  html_document:
+    css: "https://thebudgetactuary.github.io/Exam_SRM/style.css"
+    number_sections: true
+    toc: true
+    toc_depth: 3
+---
+
+# Introduction
+
+__Kaggle Introduction:__
+
+The sinking of the Titanic is one of the most infamous shipwrecks in history.
+
+On April 15, 1912, during her maiden voyage, the widely considered “unsinkable” RMS Titanic sank after colliding with an iceberg. Unfortunately, there weren’t enough lifeboats for everyone onboard, resulting in the death of 1502 out of 2224 passengers and crew.
+
+While there was some element of luck involved in surviving, it seems some groups of people were more likely to survive than others.
+
+__Goal:__
+
+The goal of this study is to build a predictive model to accurately predict whether or not a person on the titanic will survive based on a given set of features. Throughout this study we will be using feature engineering techniques and an ensemble method to try to achieve the highest accuracy possible.
+
+# Libraries
+
+```{r libraries,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(gridExtra)
+library(corrplot)
+library(stringr)
+library(knitr)
+library(gt)
+#library(gbm)
+#library(kernlab)
+options(scipen=999)
+```
+
+# Data
+
+There will be two data sets used in this study. A train data set and a test data set. The train data set will be used for the data analysis and the model building. It consists of 891 observations and 12 variables. The test set will be used to submit the final predictions. It consists of 418 observations and 11 variables. 
+
+```{r loading datasets}
+train <- read.csv("train.csv",stringsAsFactors = FALSE)
+test <- read.csv("test.csv",stringsAsFactors = FALSE)
+
+gt(head(train))
+gt(head(test))
+```
+
+# Data Analysis
+
+## Missing Values
+
+All of the missing values occur in the age column. There are 177 missing values in this column.
+
+```{r naValues}
+sum(is.na(train$Age))
+```
+
+
+## Dependent Variable
+
+The dependent variable, which is the variable we are trying to predict is whether or not a person survived on the titanic. Most of the people from the train set did not survive as 549 died and only 342 survived.
+
+```{r dependent variable, message=FALSE, warning=FALSE}
+ggplot(train,aes(x=as.factor(Survived),fill=as.factor(Survived)))+
+  geom_bar()+
+  geom_text(stat='count', aes(label=..count..), vjust=-1)+
+  theme(legend.position = "none")+
+  xlab("Survived")+
+  labs(title="Survival on the Titanic")+
+  ylim(0,600)
+```
+
+## Independent Variables
+
+__Pclass:__ Represents a proxy for socio-economic status. Most people were lower class. Upper class passengers were the only ones who had a greater probability of suriving than dying. Middle class passengers had about an equal chance of living or dying. Most of lower class died.
+
+* 1 = Upper
+* 2 = Middle
+* 3 = Lower
+
+```{r pclass}
+countPclass <- ggplot(train,aes(x=as.factor(Pclass),fill=as.factor(Pclass)))+
+  geom_bar()+
+  xlab("Pclass")+
+  labs(title="Socio Economic Status Counts")+
+  theme(legend.position = "none")+
+  geom_text(stat='count', aes(label=..count..), vjust=-1)+
+  ylim(0,550)
+
+ratioPclass <- ggplot(train,aes(x=as.factor(Pclass),fill=as.character(Survived)))+
+  geom_bar(position="dodge")+
+  scale_fill_discrete(labels=c("Died","Survived"),name = "")+
+  xlab("Pclass")+
+  labs(title="Socio Economic Status Survivorship")
+
+grid.arrange(countPclass,ratioPclass,ncol=2)
+```
+
+__Sex:__ Represents whether a person is a male or female. In the train set there are mainly males. Females had a much higher chance to survive than males. This makes sense as it is common in life and death situations for women and children to have priority. 
+
+```{r Sex}
+sexPlot <- ggplot(train,aes(x=Sex,fill=Sex))+
+  geom_bar()+
+  geom_text(stat='count', aes(label=..count..), vjust=0)+
+  labs(title="Sex Count")
+
+survivedBySex <- ggplot(train,aes(x=Sex,group=as.factor(Survived),fill=as.factor(Survived)))+
+  geom_bar(position="dodge")+
+  scale_fill_discrete(labels=c("Died","Survived"),name = "")+
+  xlab("Sex")+
+  labs(title="Survival by Sex")
+
+grid.arrange(sexPlot,survivedBySex,ncol=2)
+```
+
+__Age:__ Most people are in the 20-40 age range. 3.8% of the people are four years old or younger. The mean age of those that survived is slightly less than the average of those that died.
+
+```{r age, message=FALSE, warning=FALSE}
+ageDist <- ggplot(train[!is.na(train$Age),],aes(x=Age))+
+  geom_histogram()+
+  labs(title="Age Distribution")
+
+survivedByAge <- train %>% group_by(Survived) %>% 
+  summarize(meanAge=mean(Age,na.rm=TRUE)) %>% 
+ggplot(.,aes(x=as.factor(Survived),y=meanAge,fill=as.factor(Survived)))+
+  geom_col()+
+  theme(legend.position = "none")+
+  xlab("Survived")+
+  ylab("Average Age")+
+  labs(title="Average Age of Survived vs Died")
+
+grid.arrange(ageDist,survivedByAge,ncol=2)
+```
+
+__SibSp:__ The sum of the number of siblings and spouses on the Titanic ship. Most have zero meaning they had no sibling or spouses on ship. People with one or two siblings on board had the highest percent chance to survive. People with at least one sibling had a highter survival percentage then if they had no siblings on board.
+
+```{r sibsp}
+sibspHist <- ggplot(train,aes(x=factor(SibSp)))+
+  geom_bar()+
+  geom_text(stat='count', aes(label=..count..), vjust=0)+
+  xlab("Sibling Spouses Count")+
+  ylim(0,650)+
+  labs(title="Counts of Siblings and Spouses")
+
+
+sibspSurvive <- train %>% group_by(SibSp) %>% 
+  summarize(survived=mean(Survived,na.rm=TRUE)) %>% 
+ggplot(.,aes(x=factor(SibSp),y=survived))+
+  geom_col()+
+  xlab("Sibling Spouses Count")+
+  ylab("Percentage Chance to Survive")+
+  labs(title="Survival Probability for Siblings Spouses Count")
+  
+grid.arrange(sibspHist,sibspSurvive)
+```
+
+```{r}
+train %>% mutate(hasSibSp=ifelse(SibSp==0,0,1)) %>% 
+  group_by(hasSibSp) %>% 
+  summarize(survival=mean(Survived)) %>% 
+  ggplot(.,aes(x=as.factor(hasSibSp),y=survival))+
+  geom_col()+
+  xlab("Survived")+
+  labs(title="Survivorship",
+       subtitle="Based on Siblings or No Siblings")
+```
+
+
+
+__Parch:__ The number of parents and children on board the Titanic. The large majority had no children or parents on the ship. The effect of surviving doesn't seem to be related to the number of parents plus children. If a parent is defined as somebody eighteen or over with a parent or child on board, the survival for a parent seems to be higher compared to survival of a non-parent.
+
+```{r Parch}
+ParchHist <- ggplot(train,aes(x=factor(Parch)))+
+  geom_bar()+
+  geom_text(stat='count', aes(label=..count..), vjust=0)+
+  xlab("Parents Children Count")+
+  ylim(0,700)+
+  labs(title="Number of Parents and Children on Board")
+
+
+parchSurvive <- train %>% group_by(Parch) %>% 
+  summarize(survived=mean(Survived)) %>% 
+ggplot(.,aes(x=factor(Parch),y=survived))+
+  geom_col()+
+  xlab("Parents Children Count")+
+  ylab("Percentage Chance to Survive")+
+  ylim(0,.65)+
+  labs(title="Probability of Survival for Parent and Children Count")
+  
+grid.arrange(ParchHist,parchSurvive)
+```
+
+```{r}
+train[!is.na(train$Age),] %>% 
+  mutate(parent=ifelse(Age>=18 & Parch>0,1,0)) %>% 
+  group_by(parent) %>% 
+  summarize(survivalRate=mean(Survived),count=n()) %>% 
+  ggplot(.,aes(x=as.factor(parent),y=survivalRate,fill=as.factor(parent)))+
+  geom_col()+
+  theme(legend.position = "none")+
+  xlab("Parent")+
+  labs(title="Survival Rate Parent vs Non-Parent")
+```
+
+
+__Fare:__ Fare is the ticket price to get on the ship. Most tickets sold were very cheap while there were a few that were very expensive. This makes the fare distribution skewed to the right. There was clearly a correlation between higher ticket price and surviving.
+
+```{r Fare, message=FALSE, warning=FALSE}
+fareHist <- ggplot(train,aes(x=Fare))+
+  geom_histogram()+
+  labs(title="Ticket Fare")
+
+fareSurvived <- train %>% group_by(Survived) %>% 
+  summarize(meanFare=mean(Fare,na.rm=TRUE)) %>% 
+  ggplot(.,aes(x=factor(Survived),y=meanFare,fill=as.factor(Survived)))+
+  geom_col()+
+  xlab("Survived")+
+  ylab("Mean Fare Price")+
+  theme(legend.position = "none")+
+  labs(title="Average Fare",
+       subtitle="Survival vs Non-Survival")
+
+grid.arrange(fareHist,fareSurvived,ncol=2)
+```
+
+__Cabin:__ Cabin number. It will be grouped by the first letter of the cabin in the feature engineering section. Here we can see that the most common section in cabin is the one with no letter. It also has the lowest survival rate at around 30%. Meanwhile, some other cabin groups have survival at around 70%.
+
+```{r cabin letters}
+countCabin <- train %>% 
+  mutate(firstLetter=substr(Cabin,1,1)) %>% 
+  group_by(firstLetter) %>% 
+  summarize(count=n()) %>%
+  ggplot(.,aes(x=firstLetter,y=count))+
+  geom_col()+
+  xlab("First letter of Cabin")
+
+survivalCabin <- train %>% 
+  mutate(firstLetter=substr(Cabin,1,1)) %>% 
+  group_by(firstLetter) %>% 
+  summarize(averageSurvival=mean(Survived,na.rm=TRUE)) %>% 
+  ggplot(.,aes(x=firstLetter,y=averageSurvival))+
+  geom_col()+
+  xlab("First letter of Cabin")+
+  ylab("Survival Percentage")
+grid.arrange(countCabin,survivalCabin,ncol=2)
+
+```
+
+The numbers of the cabin also seem to have an effect on survival percentage. 
+
+```{r cabin numbers}
+train %>% 
+  mutate(cabinNumbers=substr(word(Cabin,1),2,nchar(word(Cabin,1)))) %>% 
+  select(cabinNumbers,Survived) %>% 
+  filter(cabinNumbers!="") %>% 
+  mutate(groupedCabinNumbers=cut(as.integer(cabinNumbers),breaks=c(0,20,40,60,80,100,120,Inf))) %>%
+  group_by(groupedCabinNumbers) %>% 
+  summarize(SurvivedPercentage=mean(Survived),count=n()) %>% 
+  ggplot(.,aes(x=groupedCabinNumbers,y=SurvivedPercentage))+
+  geom_col()+
+  labs(title="Survival Percentage by Cabin Number")
+
+
+```
+
+__Embarked:__ Represents where a person embarked on the ship. It appears people who boarded in Cherbours had a higher survival rate than people that boarded in Queenstown or Southampton. This can be explained from Cherbourg having the highest average ticket price. However, tickets were more expensive in Southampton than Queenstown, but did not result in a higher survival rate. There were two observations that did not have an embarked location listed, they will be filled in the feature engineering section.
+
+* C = Cherbourg
+* Q = Queenstown
+* S = Southampton
+
+```{r embarked}
+embarkedCount <- ggplot(train,aes(x=Embarked,fill=Embarked))+
+  geom_bar()+
+  labs(title="Count from where Embarked")
+
+embarkedSurvival <- train %>% group_by(Embarked) %>% 
+  summarize(averageSurvival=mean(Survived)) %>%
+  ggplot(.,aes(x=Embarked,y=averageSurvival,fill=Embarked))+
+  geom_col()+
+  ylab("Average Survival")+
+  labs(title="Survival Percentage",
+       subtitle="From where Embarked")
+
+grid.arrange(embarkedCount,embarkedSurvival,ncol=2)
+```
+
+```{r embarked vs fare}
+train %>% group_by(Embarked) %>% 
+  summarize(averagePrice=mean(Fare,na.rm=TRUE)) %>% 
+  ggplot(.,aes(x=Embarked,y=averagePrice,fill=Embarked))+
+  geom_col()+
+  labs(title="Average Ticket Price from Where Embarked")+
+  ylab("Average Ticket Price")
+```
+
+__Name:__ Name of individual persons on the Titanic. If the title of the person is extracted out, there does appear to be a difference in survival rate from a persons title.
+
+```{r name}
+titleCount <- train %>%
+  mutate(title=ifelse(grepl("MR",toupper(Name))==TRUE & grepl("MRS",toupper(Name))==FALSE,"Mr",ifelse(grepl("MRS",toupper(Name))==TRUE,"Mrs",ifelse(grepl("MISS",toupper(Name)),"Miss",ifelse(grepl("MASTER",toupper(Name))==TRUE,"Master","other"))))) %>% 
+  group_by(title) %>% 
+  summarize(count=n()) %>% 
+  ggplot(.,aes(x=title,y=count,fill=title))+
+  geom_col()+
+  ylab("Count")+
+  xlab("Title")+
+  labs(title="Counts of Title")
+
+
+titleSurvival <- train %>%
+  mutate(title=ifelse(grepl("MR",toupper(Name))==TRUE & grepl("MRS",toupper(Name))==FALSE,"Mr",ifelse(grepl("MRS",toupper(Name))==TRUE,"Mrs",ifelse(grepl("MISS",toupper(Name)),"Miss",ifelse(grepl("MASTER",toupper(Name))==TRUE,"Master","other"))))) %>% 
+  group_by(title) %>% 
+  summarize(survivedRatio=mean(Survived,na.rm=TRUE)) %>% 
+  ggplot(.,aes(x=title,y=survivedRatio,fill=title))+
+  geom_col()+
+  ylab("Survival Rate")+
+  xlab("Title")+
+  labs(title="Survival Percentage per Title")
+
+grid.arrange(titleCount,titleSurvival,ncol=2)
+```
+
+__Ticket:__ The ticket number. Some occur more than once signalling the tickets were bought by a group of people. People in large groups tended to have a lower chance of surviving.
+
+```{r ticket}
+ticketOccurance <- as.data.frame(tickOccurence <- table(train$Ticket))
+names(ticketOccurance) <- c("Ticket","groupSize")
+
+ticketCounts <- left_join(train,ticketOccurance,by=c("Ticket"="Ticket")) %>% 
+  group_by(groupSize) %>% 
+  summarize(survival=mean(Survived),count=n()) %>% 
+    ggplot(.,aes(x=as.factor(groupSize),y=count,fill=as.factor(groupSize)))+
+    geom_col()+
+  theme(legend.position = "none")+
+  xlab("Group Size")+
+  labs(title="Count of Different Group Sizes")
+
+ticketSurvive <- left_join(train,ticketOccurance,by=c("Ticket"="Ticket")) %>% 
+  group_by(groupSize) %>% 
+  summarize(survival=mean(Survived),count=n()) %>% 
+    ggplot(.,aes(x=as.factor(groupSize),y=survival,fill=as.factor(groupSize)))+
+    geom_col()+
+  theme(legend.position = "none")+
+  xlab("Group Size")+
+  ylab("Survival Percentage")+
+  labs(title="Survival Probability by Group Size")
+
+grid.arrange(ticketCounts,ticketSurvive,ncol=2)
+```
+
+
+Passenger ID will be not be used in the modeling section so will not be talked about further.
+
+# Feature Engineering
+
+Takeaways from the data analysis section:
+
+- There are two missing values in the Embarked variable.
+
+- There are NA values in the data that must be filled.
+
+- New predictors can be created from the data.
+
+- There were strong correlations in the data.
+
+__Fixing Embarked:__
+
+Since the two missing values in the embarked variable both had a high ticket price, and ticket price is highly correlated with the location embarked, the two missing values will be replaced with the most expensive embarked location which is Cherbourg.
+
+```{r}
+train[train$Embarked=="","Embarked"] <- "C"
+```
+
+__Imputation:__
+
+Lot frontage was the only variable with NA values in the train set. They will be filled with bag imputation using the variables Pclass, Sex, Age, SibSp, Parch, Fare, and Embarked. Any changes made to the train set must also be applied to the test set.
+
+```{r imputation for age}
+set.seed(123)
+imputeMissing <- preProcess(train[,c(-1,-2,-4,-9,-11)],"bagImpute")
+imputedValues <- predict(imputeMissing,train)
+
+train$Age <- imputedValues$Age
+
+imputedValuesTest <- predict(imputeMissing,test)
+test$Age <- imputedValuesTest$Age
+```
+
+There is one more remaining NA value in the test set in the Fare variable. This will filled with the same imputation method used to find age. 
+
+```{r imputing fare}
+test$Fare <- imputedValuesTest$Fare
+```
+
+__New Predictors:__
+
+A title predictor will be made, which is the title of the person extracted out from the name variable. The name predictor will then be dropped. 
+
+```{r replacing name with title}
+train <- train %>%
+  mutate(title=ifelse(grepl("MR",toupper(Name))==TRUE & grepl("MRS",toupper(Name))==FALSE,"Mr",ifelse(grepl("MRS",toupper(Name))==TRUE,"Mrs",ifelse(grepl("MISS",toupper(Name)),"Miss",ifelse(grepl("MASTER",toupper(Name))==TRUE,"Master","other")))))
+
+test <- test %>%
+  mutate(title=ifelse(grepl("MR",toupper(Name))==TRUE & grepl("MRS",toupper(Name))==FALSE,"Mr",ifelse(grepl("MRS",toupper(Name))==TRUE,"Mrs",ifelse(grepl("MISS",toupper(Name)),"Miss",ifelse(grepl("MASTER",toupper(Name))==TRUE,"Master","other")))))
+
+
+train <- train %>% select(-Name)
+test <- test %>% select(-Name)
+```
+
+Creating a feature based off first letter of cabin. People with cabin letters of G or T will be grouped into the mode because they are rare labels. The cabins without a number will be given the label of 'none'.
+
+```{r cabin letter}
+#pulling first letter
+train <- train %>% mutate(cabinLetters=substr(Cabin,1,1))
+
+#setting rare labels to mode
+train[train$cabinLetters %in% c("G","T"),"cabinLetters"] <- ""
+
+#replacing blank space factor with "none"
+train[train$cabinLetters=="","cabinLetters"] <- "none"
+
+
+test <- test %>% mutate(cabinLetters=substr(Cabin,1,1))
+test[test$cabinLetters %in% c("G","T"),"cabinLetters"] <- ""
+test[test$cabinLetters=="","cabinLetters"] <- "none"
+```
+
+A cabin number feature will be created to model the numbers of the cabin room. It will be grouped based off an interval scale of twenty. People without a cabin number will be assinged to group none. There are eight instances in the train set where there is a cabin letter but not a number. These values will be grouped into the None category. The cabin variable will then be dropped.
+
+```{r creating cabin number}
+train <- train %>% 
+  mutate(cabinNumbersGrouped=ifelse(Cabin!="",cut(as.integer(substr(word(Cabin,1),2,nchar(word(Cabin,1)))),breaks=c(0,20,40,60,80,100,120,Inf)),"None"))
+  
+test <- test %>% 
+  mutate(cabinNumbersGrouped=ifelse(Cabin!="",cut(as.integer(substr(word(Cabin,1),2,nchar(word(Cabin,1)))),breaks=c(0,20,40,60,80,100,120,Inf)),"None"))
+
+train[is.na(train$cabinNumbersGrouped),"cabinNumbersGrouped"] <- "None"
+test[is.na(test$cabinNumbersGrouped),"cabinNumbersGrouped"] <- "None"
+
+train <- train %>% select(-Cabin)
+test <- test %>% select(-Cabin)
+```
+
+hasSibSp predictor will be made for whether or not a person had a sibling or spouse on board the ship. It appears people who had at least one or more siblings or spouses had a higher survival percentage. This could be caused by increased coordination among them.
+
+```{r hasSibSp}
+train <- train %>% 
+  mutate(hasSibSp=ifelse(SibSp==0,0,1))
+
+test <- test %>% 
+  mutate(hasSibSp=ifelse(SibSp==0,0,1))
+```
+
+Anybody that has one or more in the parent or children variable and is also over eighteen will be labeled as a parent. It seems parents had priority of life rafts as they had a slightly higher survival rate. 
+
+```{r parents or children}
+train <- train %>%
+  mutate(parent=ifelse(Age>18 & Parch>0,1,0))
+
+test <- test %>%
+  mutate(parent=ifelse(Age>18 & Parch>0,1,0))
+```
+
+The groupsize predictor will be created from the ticket variable. It will show the number of people who bought tickets together. The ticket variable will then be dropped.
+
+```{r ticket group size}
+ticketOccurance <- as.data.frame(tickOccurence <- table(train$Ticket))
+names(ticketOccurance) <- c("Ticket","groupSize")
+train <- left_join(train,ticketOccurance,by=c("Ticket"="Ticket"))
+
+ticketOccuranceTest <- as.data.frame(tickOccurence <- table(test$Ticket))
+names(ticketOccuranceTest) <- c("Ticket","groupSize")
+test <- left_join(test,ticketOccuranceTest,by=c("Ticket"="Ticket"))
+
+train <- train %>% select(-Ticket)
+test <- test %>% select(-Ticket)
+```
+
+__Correlation:__
+
+Group size is moderately correlated with the number of sibling spouses and parents and children which makes intuitive sense. Fare is also correlated with ticket class which makes sense.
+
+```{r correlations}
+numericPredictors <- train %>% select(Pclass,Age,SibSp,Parch,Fare,groupSize)
+
+correlations <- as.data.frame(as.table(cor(numericPredictors)))
+
+correlations <- correlations %>% filter(Freq!=1) %>% arrange(desc(Freq)) %>% rename(correlation=Freq)
+
+corrplot(cor(numericPredictors))
+
+gt(correlations[seq(1,nrow(correlations),by=2),])
+```
+
+# Pre-Processing
+
+The string values will be changed into factors.
+
+```{r to factors}
+for(name in names(train)){
+if(is.character(train[,name]))
+  train[,name] <- as.factor(train[,name])
+}
+train$Survived <- as.factor(train$Survived)
+
+
+for(name in names(test)){
+if(is.character(test[,name]))
+  test[,name] <- as.factor(test[,name])
+}
+```
+
+The data will be centered and scaled.
+
+```{r}
+makeStandard <- preProcess(train[,c(-1,-2)],method=c("center","scale"))#1=Id,2=Survived
+standardTrain <- predict(makeStandard,train)
+
+standardTest <- predict(makeStandard,test)
+```
+
+Factors will be made into dummy variables. In this data set it wont make a differece, but in data sets with rare labels if we combined our data sets before making dummy variable it will ensure they have the same variable names.
+
+```{r making dummy variables}
+Survived <- train$Survived
+train <- train %>% select(-Survived)
+combined <- rbind(train,test)
+
+makeDummy <- dummyVars(~.,data=combined,fullRank = TRUE)
+fullDummyVars <- predict(makeDummy,combined)
+fullDummyVars <- as.data.frame(fullDummyVars)
+
+trainClean <- fullDummyVars[1:891,]
+testClean <- fullDummyVars[892:1309,]
+
+trainClean$Survived <- Survived
+```
+
+# Modeling 1
+
+Four different models will be used in this modeling section. Random forest will give us an idea of variable importance and a score in which we will try to beat. The other three models will be logistic regression, gradient boosting, and SVM.
+
+__Train Control:__
+
+Ten-fold cross validation repeated two times will be used for deciding our model.
+
+```{r train control}
+ctrl <- trainControl(method="repeatedcv",number=10,
+                     repeats=2)
+```
+
+
+
+__Random Forest:__
+
+From the random forest model we are able to extract variable importance. It labels the predictors fare, age, sex, and title as the most important predictors in deciding whether or not a person survived. The train accuracy achieved was 83.6%.
+
+```{r random forest,eval=FALSE}
+set.seed(123)
+rfMod <- train(Survived~.,data=trainClean[,-1],#1=Id
+                     method="rf",
+                     tuneGrid=expand.grid(mtry=2:ncol(train)-1),
+                     trControl=ctrl)
+
+saveRDS(rfMod,"rfMod.rds")
+```
+
+```{r loading rf mod}
+rfMod <- readRDS("rfMod.rds")
+max(rfMod$results$Accuracy)
+varImp(rfMod)
+```
+
+__Logistic Regression:__
+
+```{r logistic,eval=FALSE}
+set.seed(42421)
+logisticMod <- train(Survived~.,data=trainClean[,-1],
+                     method="glmnet",
+                     family="binomial",
+                     tuneGrid = expand.grid(alpha=1,lambda=seq(0,.1,.005)),
+                     trControl=ctrl)
+
+saveRDS(logisticMod,"logisticMod.rds")
+```
+
+```{r load logistic}
+logisticMod <- readRDS("logisticMod.rds")
+max(logisticMod$results$Accuracy)
+```
+
+__Gradient Boosting:__
+
+```{r gradient boost, eval=FALSE}
+set.seed(87232)
+gbmMod <- train(Survived~., data=trainClean[,-1], method='gbm', tuneLength=12, trControl=ctrl, verbose=FALSE)
+
+saveRDS(gbmMod,"gbmMod.rds")
+```
+
+
+```{r load gbm}
+gbmMod <- readRDS("gbmMod.rds")
+max(gbmMod$results$Accuracy)
+```
+
+__SVM:__
+
+```{r svm model, eval=FALSE}
+set.seed(20174)
+svmMod <- train(Survived~., data=trainClean[,-1], method='svmRadial', trControl=ctrl,tuneLength=7)
+
+saveRDS(svmMod,"svmMod.rds")
+```
+
+```{r loading svm model}
+svmMod <- readRDS("svmMod.rds")
+max(svmMod$results$Accuracy)
+```
+# Feature Engineering 2
+
+Four polynomial terms which are chosen based off of variable importance from the random forset model. 
+
+```{r adding polynomial terms}
+trainClean$AgeSQ <- trainClean$Age^2
+trainClean$FareSQ <- trainClean$Fare^2
+trainClean$PclassSQ <- trainClean$Pclass^2
+trainClean$groupSizeSQ <- trainClean$groupSize^2
+
+testClean$AgeSQ <- testClean$Age^2
+testClean$FareSQ <- testClean$Fare^2
+testClean$PclassSQ <- testClean$Pclass^2
+testClean$groupSizeSQ <- testClean$groupSize^2
+```
+
+# Modeling 2
+
+The accuracy improved after adding the polynomial terms for the random forest, logistic regression, and SVM models. The gradient boosting model accuracy remained the same.
+
+__Random Forest:__
+
+```{r random forest2,eval=FALSE}
+set.seed(123)
+rfMod2 <- train(Survived~.,data=trainClean[,-1],#1=Id
+                     method="rf",
+                     tuneGrid=expand.grid(mtry=2:ncol(train)-1),
+                     trControl=ctrl)
+
+saveRDS(rfMod2,"rfMod2.rds")
+```
+
+```{r loading rf mod2}
+rfMod2 <- readRDS("rfMod2.rds")
+max(rfMod2$results$Accuracy)
+```
+
+__Logistic Regression:__
+
+```{r logistic2,eval=FALSE}
+set.seed(42421)
+logisticMod2 <- train(Survived~.,data=trainClean[,-1],
+                     method="glmnet",
+                     family="binomial",
+                     tuneGrid = expand.grid(alpha=1,lambda=seq(0,.1,.005)),
+                     trControl=ctrl)
+
+saveRDS(logisticMod2,"logisticMod2.rds")
+```
+
+
+```{r load logistic2}
+logisticMod2 <- readRDS("logisticMod2.rds")
+max(logisticMod2$results$Accuracy)
+```
+
+__Gradient Boosting:__
+
+```{r gradient boost2, eval=FALSE}
+set.seed(87232)
+gbmMod2 <- train(Survived~., data=trainClean[,-1], method='gbm', tuneLength=12, trControl=ctrl, verbose=FALSE)
+
+saveRDS(gbmMod2,"gbmMod2.rds")
+```
+
+
+```{r load gbm2}
+gbmMod2 <- readRDS("gbmMod2.rds")
+max(gbmMod2$results$Accuracy)
+```
+
+__SVM:__
+
+```{r svm model2, eval=FALSE}
+set.seed(20174)
+svmMod2 <- train(Survived~., data=trainClean[,-1], method='svmRadial', trControl=ctrl,tuneLength=7)
+
+saveRDS(svmMod2,"svmMod2.rds")
+```
+
+```{r loading svm model2}
+svmMod2 <- readRDS("svmMod2.rds")
+max(svmMod2$results$Accuracy)
+```
+# Feature Engineering 3
+
+Cabin letters and numbers had little importance in the random forest model so will be dropped. By dropping these fourteen levels it should not only increase computation time, but lower the chance of over fitting.
+
+```{r}
+trainClean <- trainClean %>% select(-cabinLetters.B,-cabinLetters.B,-cabinLetters.C,-cabinLetters.D,-cabinLetters.E,-cabinLetters.F,-cabinLetters.none)
+
+trainClean <- trainClean %>% 
+  select(-cabinNumbersGrouped.2,-cabinNumbersGrouped.3,-cabinNumbersGrouped.4,-cabinNumbersGrouped.5,-cabinNumbersGrouped.6,-cabinNumbersGrouped.7,-cabinNumbersGrouped.None)
+names(trainClean)
+
+
+testClean <- testClean %>% select(-cabinLetters.B,-cabinLetters.B,-cabinLetters.C,-cabinLetters.D,-cabinLetters.E,-cabinLetters.F,-cabinLetters.none)
+
+testClean <- testClean %>% 
+  select(-cabinNumbersGrouped.2,-cabinNumbersGrouped.3,-cabinNumbersGrouped.4,-cabinNumbersGrouped.5,-cabinNumbersGrouped.6,-cabinNumbersGrouped.7,-cabinNumbersGrouped.None)
+names(trainClean)
+```
+
+# Modeling 3
+
+By dropping the cabin letter and numbers variables the accuracy increased for the gradient boosting model and SVM model but slightly decreased for the logistic regression and random forest models. However, even with the slight decrease I believe the models would still perform better on a test set with the lower number of variables.
+
+__Random Forest:__
+
+```{r random forest3,eval=FALSE}
+set.seed(123)
+rfMod3 <- train(Survived~.,data=trainClean[,-1],#1=Id
+                     method="rf",
+                     tuneGrid=expand.grid(mtry=2:ncol(train)-1),
+                     trControl=ctrl)
+
+saveRDS(rfMod3,"rfMod3.rds")
+```
+
+```{r loading rf mod3}
+rfMod3 <- readRDS("rfMod3.rds")
+max(rfMod3$results$Accuracy)
+varImp(rfMod3)
+```
+
+__Logistic Regression:__
+
+```{r logistic3,eval=FALSE}
+set.seed(42421)
+logisticMod3 <- train(Survived~.,data=trainClean[,-1],
+                     method="glmnet",
+                     family="binomial",
+                     tuneGrid = expand.grid(alpha=1,lambda=seq(0,.1,.005)),
+                     trControl=ctrl)
+
+saveRDS(logisticMod3,"logisticMod3.rds")
+```
+
+
+```{r load logistic3}
+logisticMod3 <- readRDS("logisticMod3.rds")
+max(logisticMod3$results$Accuracy)
+```
+
+__Gradient Boosting:__
+
+```{r gradient boost3, eval=FALSE}
+set.seed(87232)
+gbmMod3 <- train(Survived~., data=trainClean[,-1], method='gbm', tuneLength=12, trControl=ctrl, verbose=FALSE)
+
+saveRDS(gbmMod3,"gbmMod3.rds")
+```
+
+
+```{r load gbm3}
+gbmMod3 <- readRDS("gbmMod3.rds")
+max(gbmMod3$results$Accuracy)
+```
+
+__SVM:__
+
+```{r svm model3, eval=FALSE}
+set.seed(20174)
+svmMod3 <- train(Survived~., data=trainClean[,-1], method='svmRadial', trControl=ctrl,tuneLength=7)
+
+saveRDS(svmMod3,"svmMod3.rds")
+```
+
+```{r loading svm model3}
+svmMod3 <- readRDS("svmMod3.rds")
+max(svmMod3$results$Accuracy)
+```
+
+Two date frames are made which represent where three of the four models predicted wrong. One represents where the actual value was survived and the other where the actual value was died. When the correct response was died but the predicted value was survived, nearly all the observations were males. When the correct response was survived, but the predicted value was died nearly all observations were female. 
+
+```{r}
+resultsDF <- data.frame(observed=trainClean$Survived,
+                        svmPredict=predict(svmMod3,trainClean),
+                        gbmPredict=predict(gbmMod3,trainClean),
+                        rfPredict=predict(rfMod3,trainClean),
+                        logisticPredict=predict(logisticMod3,trainClean))
+for(name in names(resultsDF)){
+  resultsDF[,name] <- as.integer(resultsDF[,name])
+  resultsDF[,name] <- resultsDF[,name]-1
+}
+
+resultsDF$prediction <- 0
+
+resultsDF <- resultsDF %>% mutate(prediction=ifelse(svmPredict+gbmPredict+rfPredict+logisticPredict>=3 & observed==0,"veryWrong",prediction))
+
+resultsDF <- resultsDF %>% mutate(prediction=ifelse(svmPredict+gbmPredict+rfPredict+logisticPredict<=1 & observed==1,"veryWrong",prediction))
+
+resultsDF$Id <- trainClean$PassengerId
+
+trainCleanwResults <- left_join(trainClean,resultsDF,by=c("PassengerId"="Id"))
+
+kable(trainCleanwResults %>% filter(prediction=="veryWrong" & observed==0))
+kable(trainCleanwResults %>% filter(prediction=="veryWrong" & observed==0))
+```
+
+The gradient boosted model and the logistic regression model have the lowest correlation on the test set. Since they predict differently the most, these two models will be used in an ensemble technique. The third element that will be used is whether or not a person is a male or female. 
+
+The final predictions will consists of four cases:
+
+If the person is a male and both models do not predict survive: Died
+
+If the person is a male and both models predict survive: Survive
+
+If the person is a female and both models do not predict died: Survive
+
+If the person is a female and both models predict died: Died
+
+```{r}
+resultsDF <- data.frame(svmPredict=predict(svmMod3,testClean),
+                        gbmPredict=predict(gbmMod3,testClean),
+                        rfPredict=predict(rfMod3,testClean),
+                        logisticPredict=predict(logisticMod3,testClean))
+
+for(name in names(resultsDF)){
+  resultsDF[,name] <- as.integer(resultsDF[,name])
+  resultsDF[,name] <- resultsDF[,name]-1
+}
+
+cor(resultsDF)
+
+resultsDF$Id <- testClean$PassengerId
+
+testCleanwResults <- left_join(testClean,resultsDF,by=c("PassengerId"="Id"))
+```
+
+```{r}
+testCleanwResults <- testCleanwResults %>% mutate(newPredictions=ifelse(Sex.male==1,0,1))
+testCleanwResults <- testCleanwResults %>% mutate(newPredictions=ifelse(Sex.male==1 & rfPredict==1 & logisticPredict==1,1,newPredictions))
+testCleanwResults <- testCleanwResults %>% mutate(newPredictions=ifelse(Sex.male==0 & rfPredict==0 & logisticPredict==0,0,newPredictions))
+```
+
+
+__Submission:__
+
+```{r final output, eval=FALSE}
+outputDF <- data.frame(PassengerId=test$PassengerId,Survived=testCleanwResults$newPredictions)
+
+write.csv(outputDF,"submission1.csv",row.names=FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

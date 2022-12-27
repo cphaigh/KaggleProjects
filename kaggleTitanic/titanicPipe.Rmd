@@ -1,5 +1,5 @@
 ---
-title: "R Notebook"
+title: "Kaggle Titanic"
 output:
   html_document:
     css: "https://thebudgetactuary.github.io/Exam_SRM/style.css"
@@ -31,6 +31,8 @@ library(gridExtra)
 library(corrplot)
 library(stringr)
 library(knitr)
+#library(gbm)
+#library(kernlab)
 options(scipen=999)
 ```
 

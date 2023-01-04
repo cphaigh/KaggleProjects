@@ -1513,7 +1513,7 @@ test %>% filter(MasVnrArea==0 & MasVnrType!="None") %>% select(Id,MasVnrArea,Mas
 
 Now that the data analysis portion is over a random forest model will be run to develop a baseline score in which we hope to beat. 
 
-## Train Control for RF
+__Train Control:__
 
 ```{r train control}
 custom_summary = function(data, lev = NULL, model = NULL) {
@@ -1536,7 +1536,7 @@ noNearZeroVar <- train[,-noVariance]
 ```
 
 
-## Random Forest Model
+__Random Forest Model:__
 
 ```{r rf baseline, warning=FALSE,eval=FALSE}
 set.seed(123)
@@ -1555,7 +1555,7 @@ rfBase <- readRDS("rfBase.rds")
 min(rfBase$results$rmsle)
 ```
 
-Variable Importance
+__Variable Importance:__
 
 From the baseline random forest model we are also able to gather the variable importance in predicting sales price. The top 10 listed important variables are overall quality, above ground living area, garage cars, external quality, total basement square feet, kitchen quality, 1st floor square feet, garage area, year built, and basement quality.
 
@@ -1889,13 +1889,10 @@ train <- train[-1299,]
 ```
 
 
-# Modeling 2
-
-## Random Forest 
+# Modeling
 
 Another random forest model will be run to see if the results beat our baseline model. The random forest model requires little to no pre-processing.
 
-## Random Forest Model
 
 
 ```{r rf mod1, warning=FALSE,eval=FALSE}
@@ -1918,7 +1915,6 @@ min(rfMod$results$rmsle)
 data.frame(model=c("baseline","rfModel"),rmsle=c(min(rfBase$results$rmsle),min(rfMod$results$rmsle)))
 ```
 
-## Pre-Processing
 
 The following models will require us to make changes to the data such as standardization and dummy variables.
 
@@ -1944,10 +1940,6 @@ makeDummy <- dummyVars(~.,standardTrain,fullRank = TRUE)
 trainClean <- predict(makeDummy,standardTrain)
 ```
 
-
-
-
-## Other models
 
 __Lasso:__
 
@@ -2116,7 +2108,7 @@ ctrl <- trainControl(method="cv",number=10)
 ```
 
 
-# Modeling 3
+# Modeling 2
 
 __Lasso 2:__
 
